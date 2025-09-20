@@ -2,3 +2,6 @@
 .tf
 .tvars
 .terraform
+.ps1
+.hcl
+.terraform.lock.hcl
