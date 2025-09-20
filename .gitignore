@@ -1,7 +1,7 @@
 .env
 .tf
-.tvars
-.terraform
+.tfvars
+.terraform/
 .ps1
 .hcl
 .terraform.lock.hcl
