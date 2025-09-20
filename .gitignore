@@ -1,8 +1,31 @@
+# Create a new .gitignore with these contents
+echo "# Dependencies
+node_modules/
+vendor/
+bin/
+obj/
+
+# Environment files
 .env
-.tf
-.tfvars
+.env.local
+.env.production
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+logs/
+*.log
+
+# Infrastructure (what you want to exclude)
+/infra/
+terraform.tfstate*
 .terraform/
-.ps1
-.hcl
-infra
-.terraform.lock.hcl
+*.tfvars
