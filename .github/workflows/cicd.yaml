@@ -8,7 +8,7 @@ on:
 env:
   AZURE_WEBAPP_NAME: copro-web-app-zffw1v3o
   DOTNET_VERSION: '8.0.x'
-  PROJECT_PATH: 'back/ExpoBooking.Api/ExpoBooking.Api.csproj'
+  AZURE_RESOURCE_GROUP: expo-resource-group
 
 jobs:
   build-and-test:
@@ -21,6 +21,14 @@ jobs:
       uses: actions/setup-dotnet@v3
       with:
         dotnet-version: ${{ env.DOTNET_VERSION }}
+
+    - name: Find project file
+      id: find-project
+      run: |
+        # Find the correct project file path
+        $projectFile = Get-ChildItem -Recurse -Filter *.csproj | Select-Object -First 1
+        echo "PROJECT_PATH=$($projectFile.FullName)" >> $env:GITHUB_ENV
+        echo "Found project file: $($projectFile.FullName)"
 
     - name: Restore dependencies
       run: dotnet restore ${{ env.PROJECT_PATH }}
