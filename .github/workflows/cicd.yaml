@@ -1,43 +1,18 @@
-name: Deploy to Azure App Service with Rollback and Notifications
+name: Simple CI/CD Pipeline with Teams Notifications
 
 on:
   push:
-    branches: [ develop ]
-  pull_request:
-    branches: [ main ]
+    branches: [develop]
   workflow_dispatch:
 
 env:
   AZURE_WEBAPP_NAME: copro-web-app-zffw1v3o
-  AZURE_RESOURCE_GROUP: expo-resource-group
   DOTNET_VERSION: '8.0.x'
   PROJECT_PATH: 'back/ExpoBooking.Api/ExpoBooking.Api.csproj'
-  SLOT_NAME: staging
 
 jobs:
-  check-dotnet-updates:
-    runs-on: ubuntu-latest
-    outputs:
-      update_available: ${{ steps.check-updates.outputs.update_available }}
-    steps:
-    - name: Check for .NET updates
-      id: check-updates
-      run: |
-        # Check if .NET updates are available
-        CURRENT_VERSION=$(dotnet --version)
-        LATEST_VERSION=$(curl -s https://dotnetcli.blob.core.windows.net/dotnet/release-metadata/releases-index.json | jq -r '.releases[] | select(.latest-release == true) | .latest-runtime')
-        
-        if [ "$CURRENT_VERSION" != "$LATEST_VERSION" ]; then
-          echo "update_available=true" >> $GITHUB_OUTPUT
-          echo "New .NET version available: $LATEST_VERSION (current: $CURRENT_VERSION)"
-        else
-          echo "update_available=false" >> $GITHUB_OUTPUT
-          echo ".NET is up to date"
-        fi
-
   build-and-test:
     runs-on: windows-latest
-    needs: check-dotnet-updates
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
@@ -46,13 +21,6 @@ jobs:
       uses: actions/setup-dotnet@v3
       with:
         dotnet-version: ${{ env.DOTNET_VERSION }}
-
-    - name: Update .NET if needed
-      if: needs.check-dotnet-updates.outputs.update_available == 'true'
-      run: |
-        echo "Checking for .NET updates..."
-        dotnet --list-sdks
-        dotnet --list-runtimes
 
     - name: Restore dependencies
       run: dotnet restore ${{ env.PROJECT_PATH }}
@@ -66,78 +34,15 @@ jobs:
     - name: Publish with dotnet
       run: dotnet publish ${{ env.PROJECT_PATH }} --configuration Release --no-build --output ./publish
 
-    - name: Copy frontend to publish directory
-      run: |
-        xcopy /E /Y front\* publish\wwwroot\
-      shell: cmd
-
-    - name: Upload artifact for deployment
+    - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
         name: dotnet-app
         path: publish/
 
-  deploy-to-staging:
+  deploy:
     runs-on: windows-latest
     needs: build-and-test
-    environment: staging
-    steps:
-    - name: Download artifact
-      uses: actions/download-artifact@v4
-      with:
-        name: dotnet-app
-
-    - name: Azure Login
-      uses: azure/login@v1
-      with:
-        creds: ${{ secrets.AZURE_CREDENTIALS }}
-
-    - name: Deploy to staging slot
-      uses: azure/webapps-deploy@v2
-      with:
-        app-name: ${{ env.AZURE_WEBAPP_NAME }}
-        slot-name: ${{ env.SLOT_NAME }}
-        package: .
-        publish-profile: ${{ secrets.AZURE_PUBLISH_PROFILE }}
-
-    - name: Health check staging
-      run: |
-        $stagingUrl = "https://${{ env.AZURE_WEBAPP_NAME }}-${{ env.SLOT_NAME }}.azurewebsites.net"
-        $maxRetries = 5
-        $retryCount = 0
-        $success = $false
-        
-        while ($retryCount -lt $maxRetries -and -not $success) {
-          try {
-            Write-Host "Health check attempt $($retryCount + 1) on staging"
-            $response = Invoke-WebRequest -Uri $stagingUrl -Method Get -UseBasicParsing -TimeoutSec 30
-            $statusCode = $response.StatusCode
-            
-            if ($statusCode -lt 400) {
-              Write-Host "Staging health check passed with status code: $statusCode"
-              $success = $true
-            } else {
-              Write-Host "Staging health check failed with status code: $statusCode"
-              $retryCount++
-              Start-Sleep -Seconds 10
-            }
-          } catch {
-            $statusCode = $_.Exception.Response.StatusCode.value__
-            Write-Host "Staging health check failed with status code: $statusCode"
-            $retryCount++
-            Start-Sleep -Seconds 10
-          }
-        }
-        
-        if (-not $success) {
-          Write-Host "Staging health check failed after $maxRetries attempts. Deployment will not proceed to production."
-          exit 1
-        }
-      shell: pwsh
-
-  deploy-to-production:
-    runs-on: windows-latest
-    needs: deploy-to-staging
     environment: production
     steps:
     - name: Download artifact
@@ -151,70 +56,15 @@ jobs:
         creds: ${{ secrets.AZURE_CREDENTIALS }}
 
     - name: Deploy to production
-      id: deploy
       uses: azure/webapps-deploy@v2
       with:
         app-name: ${{ env.AZURE_WEBAPP_NAME }}
         package: .
         publish-profile: ${{ secrets.AZURE_PUBLISH_PROFILE }}
 
-    - name: Health check production with rollback
-      id: health-check
-      run: |
-        $productionUrl = "https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net"
-        $maxRetries = 5
-        $retryCount = 0
-        $success = $false
-        
-        while ($retryCount -lt $maxRetries -and -not $success) {
-          try {
-            Write-Host "Health check attempt $($retryCount + 1) on production"
-            $response = Invoke-WebRequest -Uri $productionUrl -Method Get -UseBasicParsing -TimeoutSec 30
-            $statusCode = $response.StatusCode
-            
-            if ($statusCode -lt 400) {
-              Write-Host "Production health check passed with status code: $statusCode"
-              $success = $true
-              echo "HEALTH_CHECK_STATUS=success" >> $env:GITHUB_OUTPUT
-            } else {
-              Write-Host "Production health check failed with status code: $statusCode"
-              $retryCount++
-              Start-Sleep -Seconds 10
-            }
-          } catch {
-            $statusCode = $_.Exception.Response.StatusCode.value__
-            Write-Host "Production health check failed with status code: $statusCode"
-            $retryCount++
-            Start-Sleep -Seconds 10
-          }
-        }
-        
-        if (-not $success) {
-          Write-Host "Production health check failed after $maxRetries attempts. Initiating rollback..."
-          
-          # Rollback to previous deployment
-          try {
-            $deploymentHistory = az webapp deployment list-publishing-profiles --name $env:AZURE_WEBAPP_NAME --resource-group $env:AZURE_RESOURCE_GROUP --query "[?publishMethod=='ZipDeploy']" | ConvertFrom-Json
-            if ($deploymentHistory.Count -gt 1) {
-              $previousDeployment = $deploymentHistory[1]
-              Write-Host "Reverting to previous deployment: $($previousDeployment.id)"
-              az webapp deployment source config-zip --name $env:AZURE_WEBAPP_NAME --resource-group $env:AZURE_RESOURCE_GROUP --src $previousDeployment.id
-              Write-Host "Rollback completed successfully"
-            } else {
-              Write-Host "No previous deployment found for rollback"
-            }
-          } catch {
-            Write-Host "Rollback failed: $($_.Exception.Message)"
-          }
-          
-          echo "HEALTH_CHECK_STATUS=failed" >> $env:GITHUB_OUTPUT
-          exit 1
-        }
-      shell: pwsh
-
   notify-teams:
     runs-on: ubuntu-latest
-    needs: [build-and-test, deploy-to-staging, deploy-to-production]
+    needs: [build-and-test, deploy]
     if: always()
     steps:
     - name: Send Teams notification
@@ -227,9 +77,6 @@ jobs:
           - **Application**: ${{ env.AZURE_WEBAPP_NAME }}
           - **Triggered by**: ${{ github.actor }}
           - **Commit**: ${{ github.sha }}
-          - **Branch**: ${{ github.ref }}
           - **Build Status**: ${{ needs.build-and-test.result }}
-          - **Staging Status**: ${{ needs.deploy-to-staging.result }}
-          - **Production Status**: ${{ needs.deploy-to-production.result }}
-          - **Health Check**: ${{ needs.deploy-to-production.outputs.HEALTH_CHECK_STATUS || 'N/A' }}
+          - **Deploy Status**: ${{ needs.deploy.result }}
         theme-color: '${{ job.status == ''success'' && ''00FF00'' || ''FF0000'' }}'
