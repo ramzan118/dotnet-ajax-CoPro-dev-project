@@ -26,9 +26,14 @@ jobs:
       id: find-project
       run: |
         # Find the correct project file path
-        $projectFile = Get-ChildItem -Recurse -Filter *.csproj | Select-Object -First 1
-        echo "PROJECT_PATH=$($projectFile.FullName)" >> $env:GITHUB_ENV
-        echo "Found project file: $($projectFile.FullName)"
+        $projectFile = Get-ChildItem -Path "back" -Recurse -Filter *.csproj | Select-Object -First 1
+        if ($projectFile) {
+          echo "PROJECT_PATH=$($projectFile.FullName)" >> $env:GITHUB_ENV
+          echo "Found project file: $($projectFile.FullName)"
+        } else {
+          echo "No .csproj file found in back directory!"
+          exit 1
+        }
 
     - name: Restore dependencies
       run: dotnet restore ${{ env.PROJECT_PATH }}
@@ -41,6 +46,25 @@ jobs:
 
     - name: Publish with dotnet
       run: dotnet publish ${{ env.PROJECT_PATH }} --configuration Release --no-build --output ./publish
+
+    - name: Process frontend files
+      run: |
+        # Remove .txt extensions from frontend files
+        Get-ChildItem -Path "front" -Filter *.txt | ForEach-Object {
+          $newName = $_.Name -replace '\.txt$', ''
+          Move-Item -Path $_.FullName -Destination (Join-Path $_.Directory $newName) -Force
+        }
+        echo "Frontend files processed (removed .txt extensions)"
+
+    - name: Copy frontend to publish directory
+      run: |
+        # Create wwwroot directory if it doesn't exist
+        if (!(Test-Path -Path "publish/wwwroot")) {
+          New-Item -ItemType Directory -Path "publish/wwwroot" -Force
+        }
+        # Copy all frontend files to wwwroot
+        Copy-Item -Path "front/*" -Destination "publish/wwwroot/" -Recurse -Force
+        echo "Frontend files copied to publish directory"
 
     - name: Upload artifact
       uses: actions/upload-artifact@v4
