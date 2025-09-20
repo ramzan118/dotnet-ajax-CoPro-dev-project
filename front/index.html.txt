@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Expo Slot Booking</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <main>
+    <h1>Expo Slot Booking</h1>
+
+    <section id="slots-section">
+      <h2>Available Slots</h2>
+      <div id="slots"></div>
+    </section>
+
+    <section id="booking-section" style="display:none">
+      <h2>Book Slot</h2>
+      <form id="booking-form">
+        <input type="hidden" id="slotId" />
+        <div>
+          <label for="slotInfo">Slot</label>
+          <input id="slotInfo" readonly />
+        </div>
+        <div>
+          <label for="name">Your name</label>
+          <input id="name" required />
+        </div>
+        <div>
+          <label for="email">Email</label>
+          <input id="email" type="email" required />
+        </div>
+        <button type="submit">Confirm Booking</button>
+        <button id="cancelBtn" type="button">Cancel</button>
+      </form>
+    </section>
+
+    <div id="message"></div>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

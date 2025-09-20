@@ -1,0 +1,5 @@
+body { font-family: Arial, sans-serif; max-width:900px; margin:2rem auto; padding:0 1rem; }
+#slots { display:flex; flex-wrap:wrap; gap:12px; }
+.slot { border:1px solid #ddd; padding:12px; width:220px; border-radius:6px; }
+.slot button { margin-top:8px; }
+#message { margin-top:1rem; color:green; }
