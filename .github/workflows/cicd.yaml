@@ -63,16 +63,6 @@ jobs:
         Copy-Item -Path "front/*" -Destination "publish/wwwroot/" -Recurse -Force
         echo "Frontend files copied to publish directory"
 
-    - name: Ensure web.config exists
-      run: |
-        if (!(Test-Path -Path "publish/web.config")) {
-          $xmlContent = '<?xml version="1.0" encoding="utf-8"?><configuration><location path="." inheritInChildApplications="false"><system.webServer><handlers><add name="aspNetCore" path="*" verb="*" modules="AspNetCoreModuleV2" resourceType="Unspecified" /></handlers><aspNetCore processPath="dotnet" arguments=".\ExpoBooking.Api.dll" stdoutLogEnabled="false" stdoutLogFile=".\logs\stdout" hostingModel="inprocess" /><defaultDocument><files><add value="index.html" /></files></defaultDocument></system.webServer></location></configuration>'
-          Set-Content -Path "publish/web.config" -Value $xmlContent
-          echo "Created web.config in publish directory"
-        } else {
-          echo "web.config already exists in publish directory"
-        }
-
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
