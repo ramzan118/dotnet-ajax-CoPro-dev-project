@@ -25,15 +25,12 @@ jobs:
     - name: Find project file
       id: find-project
       run: |
-        # Look for .csproj files in the back/ExpoBooking.Api directory and its subdirectories
         $projectFile = Get-ChildItem -Path "back/ExpoBooking.Api" -Recurse -Filter *.csproj | Select-Object -First 1
         if ($projectFile) {
           echo "PROJECT_PATH=$($projectFile.FullName)" >> $env:GITHUB_ENV
           echo "Found project file: $($projectFile.FullName)"
         } else {
           echo "No .csproj file found in back/ExpoBooking.Api directory or its subdirectories!"
-          # List all files for debugging
-          echo "Contents of back/ExpoBooking.Api directory:"
           Get-ChildItem -Path "back/ExpoBooking.Api" -Recurse
           exit 1
         }
@@ -52,20 +49,19 @@ jobs:
 
     - name: Ensure web.config exists
       run: |
-        # Check if web.config exists in publish directory, if not create it
         if (!(Test-Path -Path "publish/web.config")) {
           $webConfigContent = @"
-<?xml version="1.0" encoding="utf-8"?>
+<?xml version=`"1.0`" encoding=`"utf-8`"?>
 <configuration>
-  <location path="." inheritInChildApplications="false">
+  <location path=`"." inheritInChildApplications=`"false`">
     <system.webServer>
       <handlers>
-        <add name="aspNetCore" path="*" verb="*" modules="AspNetCoreModuleV2" resourceType="Unspecified" />
+        <add name=`"aspNetCore`" path=`"*`" verb=`"*`" modules=`"AspNetCoreModuleV2`" resourceType=`"Unspecified`" />
       </handlers>
-      <aspNetCore processPath="dotnet" arguments=".\ExpoBooking.Api.dll" stdoutLogEnabled="false" stdoutLogFile=".\logs\stdout" hostingModel="inprocess" />
+      <aspNetCore processPath=`"dotnet`" arguments=`".\ExpoBooking.Api.dll`" stdoutLogEnabled=`"false`" stdoutLogFile=`".\logs\stdout`" hostingModel=`"inprocess`" />
       <defaultDocument>
         <files>
-          <add value="index.html" />
+          <add value=`"index.html`" />
         </files>
       </defaultDocument>
     </system.webServer>
@@ -80,7 +76,6 @@ jobs:
 
     - name: Process frontend files
       run: |
-        # Remove .txt extensions from frontend files
         Get-ChildItem -Path "front" -Filter *.txt | ForEach-Object {
           $newName = $_.Name -replace '\.txt$', ''
           Move-Item -Path $_.FullName -Destination (Join-Path $_.Directory $newName) -Force
@@ -89,11 +84,9 @@ jobs:
 
     - name: Copy frontend to publish directory
       run: |
-        # Create wwwroot directory if it doesn't exist
         if (!(Test-Path -Path "publish/wwwroot")) {
           New-Item -ItemType Directory -Path "publish/wwwroot" -Force
         }
-        # Copy all frontend files to wwwroot
         Copy-Item -Path "front/*" -Destination "publish/wwwroot/" -Recurse -Force
         echo "Frontend files copied to publish directory"
 
