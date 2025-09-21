@@ -1,4 +1,4 @@
-name: Simple CI/CD Pipeline with Teams Notifications
+name: Simple CI/CD Pipeline with Email Notifications
 
 on:
   push:
@@ -97,21 +97,28 @@ jobs:
         package: .
         publish-profile: ${{ secrets.AZURE_PUBLISH_PROFILE }}
 
-  notify-teams:
+  notify-email:
     runs-on: ubuntu-latest
     needs: [build-and-test, deploy]
     if: always()
     steps:
-    - name: Send Teams notification
-      uses: aliencube/microsoft-teams-actions@v0.9.0
+    - name: Send email notification
+      uses: dawidd6/action-send-mail@v3
       with:
-        webhook_uri: ${{ secrets.TEAMS_WEBHOOK_URL }}
-        title: 'Deployment Status: ${{ job.status }}'
-        summary: |
-          Deployment to Azure App Service completed with status: **${{ job.status }}**
-          - **Application**: ${{ env.AZURE_WEBAPP_NAME }}
-          - **Triggered by**: ${{ github.actor }}
-          - **Commit**: ${{ github.sha }}
-          - **Build Status**: ${{ needs.build-and-test.result }}
-          - **Deploy Status**: ${{ needs.deploy.result }}
-        theme-color: '${{ job.status == ''success'' && ''00FF00'' || ''FF0000'' }}'
+        server_address: smtp.gmail.com
+        server_port: 465
+        username: ${{ secrets.EMAIL_USERNAME }}
+        password: ${{ secrets.EMAIL_PASSWORD }}
+        subject: 'Deployment Status: ${{ job.status }}'
+        body: |
+          Deployment to Azure App Service completed with status: ${{ job.status }}
+          
+          Details:
+          - Application: ${{ env.AZURE_WEBAPP_NAME }}
+          - Triggered by: ${{ github.actor }}
+          - Commit: ${{ github.sha }}
+          - Build Status: ${{ needs.build-and-test.result }}
+          - Deploy Status: ${{ needs.deploy.result }}
+          - Run URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        to: mramzan.workmail@gmail.com
+        from: GitHub Actions
