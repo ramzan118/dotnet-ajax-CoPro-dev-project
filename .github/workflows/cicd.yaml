@@ -54,7 +54,7 @@ jobs:
       run: |
         # Check if web.config exists in publish directory, if not create it
         if (!(Test-Path -Path "publish/web.config")) {
-          $webConfigContent = @'
+          $webConfigContent = @"
 <?xml version="1.0" encoding="utf-8"?>
 <configuration>
   <location path="." inheritInChildApplications="false">
@@ -71,7 +71,7 @@ jobs:
     </system.webServer>
   </location>
 </configuration>
-'@
+"@
           Set-Content -Path "publish/web.config" -Value $webConfigContent
           echo "Created web.config in publish directory"
         } else {
