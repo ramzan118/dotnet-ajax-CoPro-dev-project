@@ -25,16 +25,16 @@ jobs:
     - name: Find project file
       id: find-project
       run: |
-        # Look for .csproj files in the back directory and its subdirectories
-        $projectFile = Get-ChildItem -Path "back" -Recurse -Filter *.csproj | Select-Object -First 1
+        # Look for .csproj files in the back/ExpoBooking.Api directory and its subdirectories
+        $projectFile = Get-ChildItem -Path "back/ExpoBooking.Api" -Recurse -Filter *.csproj | Select-Object -First 1
         if ($projectFile) {
           echo "PROJECT_PATH=$($projectFile.FullName)" >> $env:GITHUB_ENV
           echo "Found project file: $($projectFile.FullName)"
         } else {
-          echo "No .csproj file found in back directory or its subdirectories!"
+          echo "No .csproj file found in back/ExpoBooking.Api directory or its subdirectories!"
           # List all files for debugging
-          echo "Contents of back directory:"
-          Get-ChildItem -Path "back" -Recurse
+          echo "Contents of back/ExpoBooking.Api directory:"
+          Get-ChildItem -Path "back/ExpoBooking.Api" -Recurse
           exit 1
         }
 
