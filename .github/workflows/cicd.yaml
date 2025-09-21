@@ -30,7 +30,7 @@ jobs:
           echo "PROJECT_PATH=$($projectFile.FullName)" >> $env:GITHUB_ENV
           echo "Found project file: $($projectFile.FullName)"
         } else {
-          echo "No .csproj file found in back/ExpoBooking.Api directory or its subdirectories!"
+          echo "No .csproj file found in back/ExpoBooking.Api directory!"
           Get-ChildItem -Path "back/ExpoBooking.Api" -Recurse
           exit 1
         }
@@ -47,40 +47,13 @@ jobs:
     - name: Publish with dotnet
       run: dotnet publish ${{ env.PROJECT_PATH }} --configuration Release --no-build --output ./publish
 
-    - name: Ensure web.config exists
-      run: |
-        if (!(Test-Path -Path "publish/web.config")) {
-          $webConfigContent = @"
-<?xml version=`"1.0`" encoding=`"utf-8`"?>
-<configuration>
-  <location path=`"." inheritInChildApplications=`"false`">
-    <system.webServer>
-      <handlers>
-        <add name=`"aspNetCore`" path=`"*`" verb=`"*`" modules=`"AspNetCoreModuleV2`" resourceType=`"Unspecified`" />
-      </handlers>
-      <aspNetCore processPath=`"dotnet`" arguments=`".\ExpoBooking.Api.dll`" stdoutLogEnabled=`"false`" stdoutLogFile=`".\logs\stdout`" hostingModel=`"inprocess`" />
-      <defaultDocument>
-        <files>
-          <add value=`"index.html`" />
-        </files>
-      </defaultDocument>
-    </system.webServer>
-  </location>
-</configuration>
-"@
-          Set-Content -Path "publish/web.config" -Value $webConfigContent
-          echo "Created web.config in publish directory"
-        } else {
-          echo "web.config already exists in publish directory"
-        }
-
     - name: Process frontend files
       run: |
         Get-ChildItem -Path "front" -Filter *.txt | ForEach-Object {
           $newName = $_.Name -replace '\.txt$', ''
           Move-Item -Path $_.FullName -Destination (Join-Path $_.Directory $newName) -Force
         }
-        echo "Frontend files processed (removed .txt extensions)"
+        echo "Frontend files processed"
 
     - name: Copy frontend to publish directory
       run: |
@@ -89,6 +62,16 @@ jobs:
         }
         Copy-Item -Path "front/*" -Destination "publish/wwwroot/" -Recurse -Force
         echo "Frontend files copied to publish directory"
+
+    - name: Ensure web.config exists
+      run: |
+        if (!(Test-Path -Path "publish/web.config")) {
+          $xmlContent = '<?xml version="1.0" encoding="utf-8"?><configuration><location path="." inheritInChildApplications="false"><system.webServer><handlers><add name="aspNetCore" path="*" verb="*" modules="AspNetCoreModuleV2" resourceType="Unspecified" /></handlers><aspNetCore processPath="dotnet" arguments=".\ExpoBooking.Api.dll" stdoutLogEnabled="false" stdoutLogFile=".\logs\stdout" hostingModel="inprocess" /><defaultDocument><files><add value="index.html" /></files></defaultDocument></system.webServer></location></configuration>'
+          Set-Content -Path "publish/web.config" -Value $xmlContent
+          echo "Created web.config in publish directory"
+        } else {
+          echo "web.config already exists in publish directory"
+        }
 
     - name: Upload artifact
       uses: actions/upload-artifact@v4
