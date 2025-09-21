@@ -1,13 +1,54 @@
+using Azure.Identity;
+using Azure.Extensions.AspNetCore.Configuration.Secrets;
 using ExpoBooking.Api.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Update this line in your Program.cs
+var keyVaultUrl = builder.Configuration["KeyVault:Url"] ?? "https://copro-vault-zffw1v3o.vault.azure.net/";
+
+// Add Azure Key Vault configuration provider when KeyVault URL is present
+if (!string.IsNullOrWhiteSpace(keyVaultUrl))
+{
+    try
+    {
+        var kvUri = new Uri(keyVaultUrl);
+        builder.Configuration.AddAzureKeyVault(kvUri, new DefaultAzureCredential());
+    }
+    catch (Exception ex)
+    {
+        // If Key Vault cannot be added, log and continue using other configuration sources
+        Console.WriteLine($"Warning: failed to add Azure Key Vault configuration provider: {ex.Message}");
+    }
+}
+
 // Add services to the container.
 builder.Services.AddControllers();
 builder.Services.AddDbContext<AppDbContext>(options =>
-    options.UseSqlite(builder.Configuration.GetConnectionString("DefaultConnection") ?? "Data Source=expo.db"));
+{
+    // Try to get a DB connection string from configuration (Key Vault, env, appsettings)
+    var conn = builder.Configuration.GetConnectionString("DefaultConnection");
+    if (!string.IsNullOrWhiteSpace(conn))
+    {
+        // If this is an Azure SQL connection string, use UseSqlServer; otherwise keep Sqlite fallback
+        if (conn.IndexOf("Server=", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            conn.IndexOf(".database.windows.net", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            options.UseSqlServer(conn);
+        }
+        else
+        {
+            options.UseSqlite(conn);
+        }
+    }
+    else
+    {
+        // Fallback to local SQLite
+        options.UseSqlite("Data Source=expo.db");
+    }
+});
 
 builder.Services.AddCors(options =>
 {
