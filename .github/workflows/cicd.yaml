@@ -25,13 +25,13 @@ jobs:
     - name: Find project file
       id: find-project
       run: |
-        $projectFile = Get-ChildItem -Path "back/ExpoBooking.Api" -Recurse -Filter *.csproj | Select-Object -First 1
+        $projectFile = Get-ChildItem -Path "ExpoBooking.Api" -Recurse -Filter *.csproj | Select-Object -First 1
         if ($projectFile) {
           echo "PROJECT_PATH=$($projectFile.FullName)" >> $env:GITHUB_ENV
           echo "Found project file: $($projectFile.FullName)"
         } else {
-          echo "No .csproj file found in back/ExpoBooking.Api directory!"
-          Get-ChildItem -Path "back/ExpoBooking.Api" -Recurse
+          echo "No .csproj file found in ExpoBooking.Api directory!"
+          Get-ChildItem -Path "ExpoBooking.Api" -Recurse
           exit 1
         }
 
