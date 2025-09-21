@@ -50,6 +50,34 @@ jobs:
     - name: Publish with dotnet
       run: dotnet publish ${{ env.PROJECT_PATH }} --configuration Release --no-build --output ./publish
 
+    - name: Ensure web.config exists
+      run: |
+        # Check if web.config exists in publish directory, if not create it
+        if (!(Test-Path -Path "publish/web.config")) {
+          $webConfigContent = @'
+<?xml version="1.0" encoding="utf-8"?>
+<configuration>
+  <location path="." inheritInChildApplications="false">
+    <system.webServer>
+      <handlers>
+        <add name="aspNetCore" path="*" verb="*" modules="AspNetCoreModuleV2" resourceType="Unspecified" />
+      </handlers>
+      <aspNetCore processPath="dotnet" arguments=".\ExpoBooking.Api.dll" stdoutLogEnabled="false" stdoutLogFile=".\logs\stdout" hostingModel="inprocess" />
+      <defaultDocument>
+        <files>
+          <add value="index.html" />
+        </files>
+      </defaultDocument>
+    </system.webServer>
+  </location>
+</configuration>
+'@
+          Set-Content -Path "publish/web.config" -Value $webConfigContent
+          echo "Created web.config in publish directory"
+        } else {
+          echo "web.config already exists in publish directory"
+        }
+
     - name: Process frontend files
       run: |
         # Remove .txt extensions from frontend files
