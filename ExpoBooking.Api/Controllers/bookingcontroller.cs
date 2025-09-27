@@ -1,72 +1,57 @@
-using Microsoft.AspNetCore.Mvc;
-using Dapper;
-using Microsoft.Data.SqlClient; // Changed from System.Data.SqlClient
-
-namespace ExpoBooking.Api.Controllers
+[HttpGet]
+public async Task<IActionResult> GetBookings()
 {
-    [ApiController]
-    [Route("api/[controller]")]
-    public class BookingController : ControllerBase
+    try
     {
-        private readonly IConfiguration _configuration;
-
-        public BookingController(IConfiguration configuration)
+        var connectionString = _configuration.GetConnectionString("DefaultConnection");
+        
+        if (string.IsNullOrEmpty(connectionString))
         {
-            _configuration = configuration;
+            return Ok(new { 
+                source = "Mock Data (No Connection String)", 
+                data = GetMockBookings(),
+                message = "Connection string is not configured" 
+            });
         }
 
-        [HttpGet]
-        public async Task<IActionResult> GetBookings()
+        using var connection = new SqlConnection(connectionString);
+        
+        // Test connection
+        await connection.OpenAsync();
+        
+        // Check if table exists and get real data
+        var tableExists = await connection.QueryFirstOrDefaultAsync<int?>(
+            "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'Bookings'");
+        
+        if (tableExists > 0)
         {
-            try
-            {
-                using var connection = new SqlConnection(_configuration.GetConnectionString("DefaultConnection"));
-                var bookings = await connection.QueryAsync("SELECT * FROM Bookings");
-                return Ok(bookings);
-            }
-            catch (Exception ex)
-            {
-                // Return mock data for testing since database might not be set up yet
-                var mockBookings = new[]
-                {
-                    new { Id = 1, Name = "Conference Booking", Email = "test1@example.com", EventDate = DateTime.Now.AddDays(30) },
-                    new { Id = 2, Name = "Workshop Booking", Email = "test2@example.com", EventDate = DateTime.Now.AddDays(45) }
-                };
-                return Ok(mockBookings);
-            }
+            var bookings = await connection.QueryAsync("SELECT * FROM Bookings");
+            return Ok(new { source = "Database", data = bookings });
         }
-
-        [HttpGet("{id}")]
-        public IActionResult GetBooking(int id)
+        else
         {
-            return Ok(new { message = $"Getting booking with ID: {id}" });
-        }
-
-        [HttpPost]
-        public IActionResult CreateBooking([FromBody] BookingRequest request)
-        {
-            return Ok(new { message = "Booking created successfully", booking = request });
-        }
-
-        [HttpPut("{id}")]
-        public IActionResult UpdateBooking(int id, [FromBody] BookingRequest request)
-        {
-            return Ok(new { message = $"Booking {id} updated successfully", booking = request });
-        }
-
-        [HttpDelete("{id}")]
-        public IActionResult DeleteBooking(int id)
-        {
-            return Ok(new { message = $"Booking {id} deleted successfully" });
+            return Ok(new { 
+                source = "Mock Data (Table Missing)", 
+                data = GetMockBookings(),
+                message = "Bookings table does not exist" 
+            });
         }
     }
-
-    public class BookingRequest
+    catch (Exception ex)
     {
-        public string? Name { get; set; } = string.Empty; // Made nullable
-        public string? Email { get; set; } = string.Empty; // Made nullable
-        public DateTime EventDate { get; set; }
-        public string? EventType { get; set; } = string.Empty; // Made nullable
-        public int Attendees { get; set; }
+        return Ok(new { 
+            source = "Mock Data (Connection Failed)", 
+            data = GetMockBookings(),
+            error = ex.Message 
+        });
     }
+}
+
+private List<object> GetMockBookings()
+{
+    return new List<object>
+    {
+        new { Id = 1, Name = "Conference Booking", Email = "test1@example.com", EventDate = DateTime.Now.AddDays(30) },
+        new { Id = 2, Name = "Workshop Booking", Email = "test2@example.com", EventDate = DateTime.Now.AddDays(45) }
+    };
 }
