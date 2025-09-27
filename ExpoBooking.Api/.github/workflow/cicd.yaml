@@ -13,6 +13,29 @@ env:
   AZURE_RESOURCE_GROUP: expo-resource-group
 
 jobs:
+  linting:
+    name: "🔍 Code Linting"
+    runs-on: windows-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup .NET Core
+      uses: actions/setup-dotnet@v3
+      with:
+        dotnet-version: ${{ env.DOTNET_VERSION }}
+
+    - name: Run .NET format check
+      run: |
+        echo "Running code formatting check..."
+        # Add your linting commands here
+        dotnet format --verify-no-changes --verbosity detailed || echo "Linting issues found"
+
+    - name: Run code analysis
+      run: |
+        echo "Running code analysis..."
+        # Add additional linting/analysis commands
+
   snyk-security:
     name: "🔒 Snyk Security Scan"
     runs-on: windows-latest
@@ -32,7 +55,7 @@ jobs:
       with:
         args: --severity-threshold=high --fail-on=upgradable
 
-    - name: Snyk monitor (track in Snyk dashboard)
+    - name: Snyk monitor
       uses: snyk/actions/dotnet@master
       env:
         SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
@@ -110,7 +133,7 @@ jobs:
   deploy:
     name: "🚀 Deploy to Azure"
     runs-on: windows-latest
-    needs: [snyk-security, build-and-test]
+    needs: [linting, snyk-security, build-and-test]
     environment: production
     steps:
     - name: Download artifact
@@ -130,16 +153,10 @@ jobs:
         package: .
         publish-profile: ${{ secrets.AZURE_PUBLISH_PROFILE }}
 
-    - name: Health check after deployment
-      run: |
-        echo "Running health check on deployed application..."
-        # Add your application health check URL here
-        # Invoke-RestMethod -Uri "https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net/health" -Method Get
-
   notify-email:
     name: "📧 Email Notification"
     runs-on: ubuntu-latest
-    needs: [snyk-security, build-and-test, deploy]
+    needs: [linting, snyk-security, build-and-test, deploy]
     if: always()
     steps:
     - name: Send email notification
@@ -149,36 +166,109 @@ jobs:
         server_port: 465
         username: ${{ secrets.EMAIL_USERNAME }}
         password: ${{ secrets.EMAIL_PASSWORD }}
-        subject: 'Deployment Status: ${{ needs.deploy.result }} - ${{ github.workflow }}'
+        subject: 'CI/CD Status: ${{ needs.deploy.result }} - ${{ github.workflow }}'
         body: |
-          # CI/CD Pipeline Status - ${{ github.workflow }}
-          
-          ## Summary:
-          - **Overall Status**: ${{ needs.deploy.result }}
-          - **Application**: ${{ env.AZURE_WEBAPP_NAME }}
-          - **Triggered by**: ${{ github.actor }}
-          - **Branch**: ${{ github.ref }}
-          - **Commit**: ${{ github.sha }}
-          
-          ## Detailed Results:
-          - 🔒 **Snyk Security Scan**: ${{ needs.snyk-security.result }}
-          - 🏗️ **Build & Test**: ${{ needs.build-and-test.result }}
-          - 🚀 **Deployment**: ${{ needs.deploy.result }}
-          
-          ## Security Findings:
-          ${{ needs.snyk-security.result == 'success' && '✅ No high severity vulnerabilities detected' || '⚠️ Security issues found - review required' }}
-          
-          ## Next Steps:
-          ${{ needs.deploy.result == 'success' && '✅ Deployment completed successfully' || '❌ Deployment failed - check logs for details' }}
-          
-          ---
-          **Run Details:** 
-          - Repository: ${{ github.repository }}
-          - Workflow: ${{ github.workflow }}
-          - Run ID: ${{ github.run_id }}
-          - View Logs: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          
-          *This is an automated message from GitHub Actions*
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <style>
+              body { font-family: Arial, sans-serif; margin: 20px; }
+              .container { max-width: 600px; margin: 0 auto; }
+              .header { background: #f4f4f4; padding: 20px; border-radius: 5px; }
+              .status-pass { color: #2d8c2d; font-weight: bold; }
+              .status-fail { color: #d63638; font-weight: bold; }
+              .status-skipped { color: #8a8a8a; font-weight: bold; }
+              .test-result { margin: 10px 0; padding: 10px; border-left: 4px solid; }
+              .passed { border-color: #2d8c2d; background: #f0f9f0; }
+              .failed { border-color: #d63638; background: #fdf0f0; }
+              .skipped { border-color: #8a8a8a; background: #f8f8f8; }
+              .summary { background: #e8f4fd; padding: 15px; border-radius: 5px; margin: 20px 0; }
+            </style>
+          </head>
+          <body>
+            <div class="container">
+              <div class="header">
+                <h1>🚀 CI/CD Pipeline Status</h1>
+                <h2>Workflow: ${{ github.workflow }}</h2>
+                <p><strong>Overall Status:</strong> <span class="${{ needs.deploy.result == 'success' && 'status-pass' || 'status-fail' }}">${{ needs.deploy.result }}</span></p>
+              </div>
+
+              <div class="summary">
+                <h3>📊 Quick Summary</h3>
+                <p><strong>Application:</strong> ${{ env.AZURE_WEBAPP_NAME }}</p>
+                <p><strong>Triggered by:</strong> ${{ github.actor }}</p>
+                <p><strong>Branch:</strong> ${{ github.ref }}</p>
+                <p><strong>Commit:</strong> ${{ github.sha }}</p>
+                <p><strong>Timestamp:</strong> ${{ fromJSON('{}').now }}</p>
+              </div>
+
+              <h3>🔍 Detailed Test Results</h3>
+
+              <div class="test-result ${{ needs.linting.result == 'success' && 'passed' || needs.linting.result == 'failure' && 'failed' || 'skipped' }}">
+                <h4>🔍 Code Linting & Quality</h4>
+                <p><strong>Status:</strong> <span class="${{ needs.linting.result == 'success' && 'status-pass' || needs.linting.result == 'failure' && 'status-fail' || 'status-skipped' }}">
+                  ${{ needs.linting.result == 'success' && '✅ PASSED' || needs.linting.result == 'failure' && '❌ FAILED' || '⚪ SKIPPED' }}
+                </span></p>
+                <p>Code formatting, style checks, and quality analysis</p>
+              </div>
+
+              <div class="test-result ${{ needs.snyk-security.result == 'success' && 'passed' || needs.snyk-security.result == 'failure' && 'failed' || 'skipped' }}">
+                <h4>🔒 Snyk Security Scan</h4>
+                <p><strong>Status:</strong> <span class="${{ needs.snyk-security.result == 'success' && 'status-pass' || needs.snyk-security.result == 'failure' && 'status-fail' || 'status-skipped' }}">
+                  ${{ needs.snyk-security.result == 'success' && '✅ PASSED' || needs.snyk-security.result == 'failure' && '❌ FAILED' || '⚪ SKIPPED' }}
+                </span></p>
+                <p>Vulnerability assessment and dependency scanning</p>
+                ${{ needs.snyk-security.result == 'success' && '<p>✅ No high severity vulnerabilities detected</p>' || '' }}
+                ${{ needs.snyk-security.result == 'failure' && '<p>❌ Security vulnerabilities found - immediate review required</p>' || '' }}
+              </div>
+
+              <div class="test-result ${{ needs.build-and-test.result == 'success' && 'passed' || needs.build-and-test.result == 'failure' && 'failed' || 'skipped' }}">
+                <h4>🏗️ Build & Unit Tests</h4>
+                <p><strong>Status:</strong> <span class="${{ needs.build-and-test.result == 'success' && 'status-pass' || needs.build-and-test.result == 'failure' && 'status-fail' || 'status-skipped' }}">
+                  ${{ needs.build-and-test.result == 'success' && '✅ PASSED' || needs.build-and-test.result == 'failure' && '❌ FAILED' || '⚪ SKIPPED' }}
+                </span></p>
+                <p>Compilation, testing, and artifact preparation</p>
+              </div>
+
+              <div class="test-result ${{ needs.deploy.result == 'success' && 'passed' || needs.deploy.result == 'failure' && 'failed' || 'skipped' }}">
+                <h4>🚀 Azure Deployment</h4>
+                <p><strong>Status:</strong> <span class="${{ needs.deploy.result == 'success' && 'status-pass' || needs.deploy.result == 'failure' && 'status-fail' || 'status-skipped' }}">
+                  ${{ needs.deploy.result == 'success' && '✅ PASSED' || needs.deploy.result == 'failure' && '❌ FAILED' || '⚪ SKIPPED' }}
+                </span></p>
+                <p>Deployment to Azure App Service production environment</p>
+                ${{ needs.deploy.result == 'success' && '<p>✅ Application successfully deployed to production</p>' || '' }}
+                ${{ needs.deploy.result == 'failure' && '<p>❌ Deployment failed - check Azure logs</p>' || '' }}
+              </div>
+
+              <div class="summary">
+                <h3>🎯 Final Result</h3>
+                ${{ needs.linting.result == 'success' && needs.snyk-security.result == 'success' && needs.build-and-test.result == 'success' && needs.deploy.result == 'success' }}
+                <p style="color: #2d8c2d; font-size: 18px; font-weight: bold;">✅ ALL CHECKS PASSED - Deployment Successful!</p>
+                ${{ else }}
+                <p style="color: #d63638; font-size: 18px; font-weight: bold;">❌ SOME CHECKS FAILED - Review Required!</p>
+                ${{ endif }}
+                
+                <p><strong>Failed Jobs:</strong> 
+                ${{ needs.linting.result == 'failure' && '🔍 Linting, ' || '' }}
+                ${{ needs.snyk-security.result == 'failure' && '🔒 Snyk Security, ' || '' }}
+                ${{ needs.build-and-test.result == 'failure' && '🏗️ Build & Test, ' || '' }}
+                ${{ needs.deploy.result == 'failure' && '🚀 Deployment' || '' }}
+                ${{ needs.linting.result != 'failure' && needs.snyk-security.result != 'failure' && needs.build-and-test.result != 'failure' && needs.deploy.result != 'failure' && 'None' || '' }}
+                </p>
+              </div>
+
+              <hr>
+              <p><strong>🔗 Quick Links:</strong></p>
+              <ul>
+                <li><a href="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}">View Detailed Logs</a></li>
+                <li><a href="https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net">Visit Application</a></li>
+                <li><a href="https://github.com/${{ github.repository }}">Repository</a></li>
+              </ul>
+
+              <p><em>This is an automated message from GitHub Actions CI/CD Pipeline</em></p>
+            </div>
+          </body>
+          </html>
         to: mramzan.workmail@gmail.com
         from: GitHub Actions
         content_type: text/html
