@@ -1,96 +1,48 @@
-name: CI/CD with Required PR Linting
+name: CI/CD Pipeline with Snyk Security & Email Notifications
 
 on:
   push:
-    branches: [develop, main]
+    branches: [develop]
   pull_request:
     branches: [develop, main]
-    types: [opened, synchronize, reopened]
+  workflow_dispatch:
 
 env:
-  AZURE_WEBAPP_NAME: copro-web-app-zffw3v3o
+  AZURE_WEBAPP_NAME: copro-web-app-zffw1v3o
   DOTNET_VERSION: '8.0.x'
   AZURE_RESOURCE_GROUP: expo-resource-group
 
 jobs:
-  linting:
-    name: "🔍 Linting & Code Quality"
+  snyk-security:
+    name: "🔒 Snyk Security Scan"
     runs-on: windows-latest
-    if: github.event_name == 'pull_request' || github.event_name == 'push'
-    
-    outputs:
-      result: ${{ steps.final-status.outputs.result }}
-
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
 
     - name: Setup .NET Core
       uses: actions/setup-dotnet@v3
       with:
         dotnet-version: ${{ env.DOTNET_VERSION }}
 
-    - name: .NET Code Formatting Check
-      id: dotnet-format
-      continue-on-error: true
-      run: |
-        # Your existing formatting code...
-        # But ensure it sets proper exit codes
-        if ($formatIssues) {
-          exit 1
-        }
-
-    - name: .NET Build with Analyzers
-      id: dotnet-build
-      run: |
-        # Your existing build code...
-
-    - name: JavaScript/TypeScript Linting
-      id: js-lint
-      continue-on-error: true
-      run: |
-        # Your existing JS linting code...
-
-    - name: Set final linting status
-      id: final-status
-      run: |
-        # Determine overall status based on previous steps
-        if ("${{ steps.dotnet-format.outcome }}" == "failure" || "${{ steps.dotnet-build.outcome }}" == "failure") {
-          echo "result=failure" >> $env:GITHUB_OUTPUT
-          echo "::error::Linting failed"
-          exit 1
-        } else {
-          echo "result=success" >> $env:GITHUB_OUTPUT
-        }
-
-  security-scan:
-    name: "🔒 Security Scan"
-    runs-on: windows-latest
-    if: github.event_name == 'pull_request'
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Setup .NET
-      uses: actions/setup-dotnet@v3
+    - name: Run Snyk to check for vulnerabilities
+      uses: snyk/actions/dotnet@master
+      env:
+        SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
       with:
-        dotnet-version: ${{ env.DOTNET_VERSION }}
+        args: --severity-threshold=high --fail-on=upgradable
 
-    - name: Vulnerability Check
-      run: |
-        # Your existing security code...
-
-    - name: Always succeed security scan (for demo)
-      run: echo "Security scan completed"
+    - name: Snyk monitor (track in Snyk dashboard)
+      uses: snyk/actions/dotnet@master
+      env:
+        SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+      with:
+        command: monitor
+        args: --severity-threshold=high
 
   build-and-test:
     name: "🏗️ Build & Test"
     runs-on: windows-latest
-    needs: [linting, security-scan]
-    
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
@@ -100,27 +52,133 @@ jobs:
       with:
         dotnet-version: ${{ env.DOTNET_VERSION }}
 
-    - name: Build and test
+    - name: Find project file
+      id: find-project
       run: |
-        # Your existing build/test code...
-
-# Add this new job to create required status checks
-  required-checks:
-    name: "✅ Required Checks"
-    runs-on: windows-latest
-    needs: [linting, security-scan, build-and-test]
-    if: always()
-    
-    steps:
-    - name: Aggregate check results
-      id: checks
-      run: |
-        $allSuccess = ${{ needs.linting.result == 'success' && needs.build-and-test.result == 'success' }}
-        if ($allSuccess) {
-          echo "result=success" >> $env:GITHUB_OUTPUT
-          echo "All required checks passed!"
+        $projectFile = Get-ChildItem -Path "ExpoBooking.Api" -Recurse -Filter *.csproj | Select-Object -First 1
+        if ($projectFile) {
+          echo "PROJECT_PATH=$($projectFile.FullName)" >> $env:GITHUB_ENV
+          echo "Found project file: $($projectFile.FullName)"
         } else {
-          echo "result=failure" >> $env:GITHUB_OUTPUT
-          echo "Some checks failed"
+          echo "No .csproj file found in ExpoBooking.Api directory!"
+          Get-ChildItem -Path "ExpoBooking.Api" -Recurse
           exit 1
         }
+
+    - name: Restore dependencies
+      run: dotnet restore ${{ env.PROJECT_PATH }}
+
+    - name: Build with dotnet
+      run: dotnet build ${{ env.PROJECT_PATH }} --configuration Release --no-restore
+
+    - name: Test with dotnet
+      run: dotnet test ${{ env.PROJECT_PATH }} --configuration Release --no-build --verbosity normal
+
+    - name: Publish with dotnet
+      run: dotnet publish ${{ env.PROJECT_PATH }} --configuration Release --no-build --output ./publish
+
+    - name: Process frontend files
+      run: |
+        if (Test-Path -Path "front") {
+          Get-ChildItem -Path "front" -Filter *.txt | ForEach-Object {
+            $newName = $_.Name -replace '\.txt$', ''
+            Move-Item -Path $_.FullName -Destination (Join-Path $_.Directory $newName) -Force
+          }
+          echo "Frontend files processed"
+        } else {
+          echo "No frontend directory found, skipping frontend processing"
+        }
+
+    - name: Copy frontend to publish directory
+      run: |
+        if (Test-Path -Path "front") {
+          if (!(Test-Path -Path "publish/wwwroot")) {
+            New-Item -ItemType Directory -Path "publish/wwwroot" -Force
+          }
+          Copy-Item -Path "front/*" -Destination "publish/wwwroot/" -Recurse -Force
+          echo "Frontend files copied to publish directory"
+        } else {
+          echo "No frontend directory found, skipping frontend copy"
+        }
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: dotnet-app
+        path: publish/
+
+  deploy:
+    name: "🚀 Deploy to Azure"
+    runs-on: windows-latest
+    needs: [snyk-security, build-and-test]
+    environment: production
+    steps:
+    - name: Download artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: dotnet-app
+
+    - name: Azure Login
+      uses: azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+    - name: Deploy to production
+      uses: azure/webapps-deploy@v2
+      with:
+        app-name: ${{ env.AZURE_WEBAPP_NAME }}
+        package: .
+        publish-profile: ${{ secrets.AZURE_PUBLISH_PROFILE }}
+
+    - name: Health check after deployment
+      run: |
+        echo "Running health check on deployed application..."
+        # Add your application health check URL here
+        # Invoke-RestMethod -Uri "https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net/health" -Method Get
+
+  notify-email:
+    name: "📧 Email Notification"
+    runs-on: ubuntu-latest
+    needs: [snyk-security, build-and-test, deploy]
+    if: always()
+    steps:
+    - name: Send email notification
+      uses: dawidd6/action-send-mail@v3
+      with:
+        server_address: smtp.gmail.com
+        server_port: 465
+        username: ${{ secrets.EMAIL_USERNAME }}
+        password: ${{ secrets.EMAIL_PASSWORD }}
+        subject: 'Deployment Status: ${{ needs.deploy.result }} - ${{ github.workflow }}'
+        body: |
+          # CI/CD Pipeline Status - ${{ github.workflow }}
+          
+          ## Summary:
+          - **Overall Status**: ${{ needs.deploy.result }}
+          - **Application**: ${{ env.AZURE_WEBAPP_NAME }}
+          - **Triggered by**: ${{ github.actor }}
+          - **Branch**: ${{ github.ref }}
+          - **Commit**: ${{ github.sha }}
+          
+          ## Detailed Results:
+          - 🔒 **Snyk Security Scan**: ${{ needs.snyk-security.result }}
+          - 🏗️ **Build & Test**: ${{ needs.build-and-test.result }}
+          - 🚀 **Deployment**: ${{ needs.deploy.result }}
+          
+          ## Security Findings:
+          ${{ needs.snyk-security.result == 'success' && '✅ No high severity vulnerabilities detected' || '⚠️ Security issues found - review required' }}
+          
+          ## Next Steps:
+          ${{ needs.deploy.result == 'success' && '✅ Deployment completed successfully' || '❌ Deployment failed - check logs for details' }}
+          
+          ---
+          **Run Details:** 
+          - Repository: ${{ github.repository }}
+          - Workflow: ${{ github.workflow }}
+          - Run ID: ${{ github.run_id }}
+          - View Logs: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          
+          *This is an automated message from GitHub Actions*
+        to: mramzan.workmail@gmail.com
+        from: GitHub Actions
+        content_type: text/html
