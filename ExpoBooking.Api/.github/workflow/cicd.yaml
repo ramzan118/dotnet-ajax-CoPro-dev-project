@@ -9,6 +9,7 @@ env:
   AZURE_WEBAPP_NAME: copro-web-app-zffw1v3o
   DOTNET_VERSION: '8.0.x'
   AZURE_RESOURCE_GROUP: expo-resource-group
+  PROJECT_PATH: ExpoBooking.Api/copro.csproj
 
 jobs:
   build-and-test:
@@ -22,53 +23,76 @@ jobs:
       with:
         dotnet-version: ${{ env.DOTNET_VERSION }}
 
-    - name: Find project file
-      id: find-project
+    - name: Validate project file exists
       run: |
-        $projectFile = Get-ChildItem -Path "ExpoBooking.Api" -Recurse -Filter *.csproj | Select-Object -First 1
-        if ($projectFile) {
-          echo "PROJECT_PATH=$($projectFile.FullName)" >> $env:GITHUB_ENV
-          echo "Found project file: $($projectFile.FullName)"
-        } else {
-          echo "No .csproj file found in ExpoBooking.Api directory!"
-          Get-ChildItem -Path "ExpoBooking.Api" -Recurse
+        if (!(Test-Path -Path "${{ env.PROJECT_PATH }}")) {
+          Write-Error "Project file not found: ${{ env.PROJECT_PATH }}"
+          Get-ChildItem -Recurse -Filter *.csproj
           exit 1
         }
+        echo "Project file found: ${{ env.PROJECT_PATH }}"
+
     - name: Restore dependencies
       run: dotnet restore ${{ env.PROJECT_PATH }}
 
     - name: Build with dotnet
       run: dotnet build ${{ env.PROJECT_PATH }} --configuration Release --no-restore
 
-    - name: Test with dotnet
+    - name: Run tests
       run: dotnet test ${{ env.PROJECT_PATH }} --configuration Release --no-build --verbosity normal
 
-    - name: Publish with dotnet
+    - name: Publish application
       run: dotnet publish ${{ env.PROJECT_PATH }} --configuration Release --no-build --output ./publish
 
     - name: Process frontend files
       run: |
-        Get-ChildItem -Path "front" -Filter *.txt | ForEach-Object {
-          $newName = $_.Name -replace '\.txt$', ''
-          Move-Item -Path $_.FullName -Destination (Join-Path $_.Directory $newName) -Force
+        if (Test-Path -Path "front") {
+          if (!(Test-Path -Path "publish/wwwroot")) {
+            New-Item -ItemType Directory -Path "publish/wwwroot" -Force
+          }
+          Copy-Item -Path "front/*" -Destination "publish/wwwroot/" -Recurse -Force
+          echo "Frontend files copied to publish directory"
+        } else {
+          echo "No frontend directory found, skipping frontend copy"
         }
-        echo "Frontend files processed"
-    - name: Copy frontend to publish directory
-      run: |
-        if (!(Test-Path -Path "publish/wwwroot")) {
-          New-Item -ItemType Directory -Path "publish/wwwroot" -Force
-        }
-        Copy-Item -Path "front/*" -Destination "publish/wwwroot/" -Recurse -Force
-        echo "Frontend files copied to publish directory"
-    - name: Upload artifact
+
+    - name: Upload build artifact
       uses: actions/upload-artifact@v4
       with:
         name: dotnet-app
         path: publish/
 
-  deploy:
+  security-scan:
     runs-on: windows-latest
     needs: build-and-test
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup .NET Core
+      uses: actions/setup-dotnet@v3
+      with:
+        dotnet-version: ${{ env.DOTNET_VERSION }}
+
+    - name: Run security audit
+      run: |
+        dotnet list ${{ env.PROJECT_PATH }} package --vulnerable
+        dotnet restore ${{ env.PROJECT_PATH }} --interactive
+
+    - name: Check for known vulnerabilities
+      run: |
+        $vulnerable = dotnet list ${{ env.PROJECT_PATH }} package --vulnerable | Select-String "has the following vulnerable packages"
+        if ($vulnerable) {
+          echo "Vulnerabilities found:"
+          dotnet list ${{ env.PROJECT_PATH }} package --vulnerable
+          exit 1
+        } else {
+          echo "No known vulnerabilities detected"
+        }
+
+  deploy:
+    runs-on: windows-latest
+    needs: [build-and-test, security-scan]
     environment: production
     steps:
     - name: Download artifact
@@ -81,16 +105,46 @@ jobs:
       with:
         creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-    - name: Deploy to production
+    - name: Deploy to Azure Web App
       uses: azure/webapps-deploy@v2
       with:
         app-name: ${{ env.AZURE_WEBAPP_NAME }}
         package: .
         publish-profile: ${{ secrets.AZURE_PUBLISH_PROFILE }}
 
+    - name: Run health check
+      run: |
+        $maxRetries = 10
+        $retryCount = 0
+        $sleepSeconds = 10
+        
+        do {
+          try {
+            $response = Invoke-WebRequest -Uri "https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net/api/health" -UseBasicParsing
+            if ($response.StatusCode -eq 200) {
+              echo "Health check passed: Application is running successfully"
+              $healthData = $response.Content | ConvertFrom-Json
+              echo "Database status: $($healthData.Database.Status)"
+              break
+            }
+          } catch {
+            echo "Health check attempt $($retryCount + 1) failed: $($_.Exception.Message)"
+            $retryCount++
+            if ($retryCount -lt $maxRetries) {
+              echo "Retrying in $sleepSeconds seconds..."
+              Start-Sleep -Seconds $sleepSeconds
+            }
+          }
+        } while ($retryCount -lt $maxRetries)
+        
+        if ($retryCount -eq $maxRetries) {
+          echo "Health check failed after $maxRetries attempts"
+          exit 1
+        }
+
   notify-email:
     runs-on: ubuntu-latest
-    needs: [build-and-test, deploy]
+    needs: [build-and-test, security-scan, deploy]
     if: always()
     steps:
     - name: Send email notification
@@ -100,16 +154,53 @@ jobs:
         server_port: 465
         username: ${{ secrets.EMAIL_USERNAME }}
         password: ${{ secrets.EMAIL_PASSWORD }}
-        subject: 'Deployment Status: ${{ job.status }}'
+        subject: 'Deployment Status: ${{ needs.deploy.result || ''github.event_name'' }}'
         body: |
-          Deployment to Azure App Service completed with status: ${{ job.status }}
+          CI/CD Pipeline Execution Results
           
-          Details:
-          - Application: ${{ env.AZURE_WEBAPP_NAME }}
-          - Triggered by: ${{ github.actor }}
-          - Commit: ${{ github.sha }}
-          - Build Status: ${{ needs.build-and-test.result }}
-          - Deploy Status: ${{ needs.deploy.result }}
-          - Run URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          Application: ${{ env.AZURE_WEBAPP_NAME }}
+          Repository: ${{ github.repository }}
+          Triggered by: ${{ github.actor }}
+          Branch: ${{ github.ref_name }}
+          Commit: ${{ github.sha }}
+          Run ID: ${{ github.run_id }}
+          Run URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          
+          Job Status:
+          - Build & Test: ${{ needs.build-and-test.result }}
+          - Security Scan: ${{ needs.security-scan.result }}
+          - Deployment: ${{ needs.deploy.result }}
+          
+          Overall Status: ${{ job.status }}
+          
+          ${{ contains(join(needs.*.result, ','), 'failure') && '❌ Deployment failed - Please check the workflow logs' || '✅ Deployment completed successfully' }}
+          
+          Timestamp: ${{ github.event.head_commit.timestamp }}
         to: mramzan.workmail@gmail.com
         from: GitHub Actions
+        content_type: text/html
+
+  post-deployment-test:
+    runs-on: windows-latest
+    needs: deploy
+    steps:
+    - name: Run API tests
+      run: |
+        $testUrls = @(
+          "https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net/",
+          "https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net/api/health",
+          "https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net/api/booking"
+        )
+        
+        foreach ($url in $testUrls) {
+          try {
+            $response = Invoke-WebRequest -Uri $url -UseBasicParsing
+            echo "✅ $url - Status: $($response.StatusCode)"
+            if ($url -like "*api/booking*") {
+              $data = $response.Content | ConvertFrom-Json
+              echo "   Data source: $($data.source)"
+            }
+          } catch {
+            echo "❌ $url - Error: $($_.Exception.Message)"
+          }
+        }
