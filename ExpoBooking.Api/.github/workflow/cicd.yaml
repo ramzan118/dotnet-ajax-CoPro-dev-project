@@ -1,0 +1,115 @@
+name: Simple CI/CD Pipeline with Email Notifications
+
+on:
+  push:
+    branches: [develop]
+  workflow_dispatch:
+
+env:
+  AZURE_WEBAPP_NAME: copro-web-app-zffw1v3o
+  DOTNET_VERSION: '8.0.x'
+  AZURE_RESOURCE_GROUP: expo-resource-group
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup .NET Core
+      uses: actions/setup-dotnet@v3
+      with:
+        dotnet-version: ${{ env.DOTNET_VERSION }}
+
+    - name: Find project file
+      id: find-project
+      run: |
+        $projectFile = Get-ChildItem -Path "ExpoBooking.Api" -Recurse -Filter *.csproj | Select-Object -First 1
+        if ($projectFile) {
+          echo "PROJECT_PATH=$($projectFile.FullName)" >> $env:GITHUB_ENV
+          echo "Found project file: $($projectFile.FullName)"
+        } else {
+          echo "No .csproj file found in ExpoBooking.Api directory!"
+          Get-ChildItem -Path "ExpoBooking.Api" -Recurse
+          exit 1
+        }
+    - name: Restore dependencies
+      run: dotnet restore ${{ env.PROJECT_PATH }}
+
+    - name: Build with dotnet
+      run: dotnet build ${{ env.PROJECT_PATH }} --configuration Release --no-restore
+
+    - name: Test with dotnet
+      run: dotnet test ${{ env.PROJECT_PATH }} --configuration Release --no-build --verbosity normal
+
+    - name: Publish with dotnet
+      run: dotnet publish ${{ env.PROJECT_PATH }} --configuration Release --no-build --output ./publish
+
+    - name: Process frontend files
+      run: |
+        Get-ChildItem -Path "front" -Filter *.txt | ForEach-Object {
+          $newName = $_.Name -replace '\.txt$', ''
+          Move-Item -Path $_.FullName -Destination (Join-Path $_.Directory $newName) -Force
+        }
+        echo "Frontend files processed"
+    - name: Copy frontend to publish directory
+      run: |
+        if (!(Test-Path -Path "publish/wwwroot")) {
+          New-Item -ItemType Directory -Path "publish/wwwroot" -Force
+        }
+        Copy-Item -Path "front/*" -Destination "publish/wwwroot/" -Recurse -Force
+        echo "Frontend files copied to publish directory"
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: dotnet-app
+        path: publish/
+
+  deploy:
+    runs-on: windows-latest
+    needs: build-and-test
+    environment: production
+    steps:
+    - name: Download artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: dotnet-app
+
+    - name: Azure Login
+      uses: azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+    - name: Deploy to production
+      uses: azure/webapps-deploy@v2
+      with:
+        app-name: ${{ env.AZURE_WEBAPP_NAME }}
+        package: .
+        publish-profile: ${{ secrets.AZURE_PUBLISH_PROFILE }}
+
+  notify-email:
+    runs-on: ubuntu-latest
+    needs: [build-and-test, deploy]
+    if: always()
+    steps:
+    - name: Send email notification
+      uses: dawidd6/action-send-mail@v3
+      with:
+        server_address: smtp.gmail.com
+        server_port: 465
+        username: ${{ secrets.EMAIL_USERNAME }}
+        password: ${{ secrets.EMAIL_PASSWORD }}
+        subject: 'Deployment Status: ${{ job.status }}'
+        body: |
+          Deployment to Azure App Service completed with status: ${{ job.status }}
+          
+          Details:
+          - Application: ${{ env.AZURE_WEBAPP_NAME }}
+          - Triggered by: ${{ github.actor }}
+          - Commit: ${{ github.sha }}
+          - Build Status: ${{ needs.build-and-test.result }}
+          - Deploy Status: ${{ needs.deploy.result }}
+          - Run URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        to: mramzan.workmail@gmail.com
+        from: GitHub Actions
