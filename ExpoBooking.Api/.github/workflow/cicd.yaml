@@ -1,164 +1,36 @@
-name: CI/CD Pipeline with Snyk Security & Email Notifications
-
-on:
-  push:
-    branches: [develop]
-  pull_request:
-    branches: [develop, main]
-  workflow_dispatch:
-
-env:
-  AZURE_WEBAPP_NAME: copro-web-app-zffw1v3o
-  DOTNET_VERSION: '8.0.x'
-  AZURE_RESOURCE_GROUP: expo-resource-group
-
-jobs:
-  linting:
-    name: "🔍 Code Linting"
-    runs-on: windows-latest
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Setup .NET Core
-      uses: actions/setup-dotnet@v3
-      with:
-        dotnet-version: ${{ env.DOTNET_VERSION }}
-
-    - name: Run .NET format check
-      run: |
-        echo "Running code formatting check..."
-        # Add your linting commands here
-        dotnet format --verify-no-changes --verbosity detailed || echo "Linting issues found"
-
-    - name: Run code analysis
-      run: |
-        echo "Running code analysis..."
-        # Add additional linting/analysis commands
-
-  snyk-security:
-    name: "🔒 Snyk Security Scan"
-    runs-on: windows-latest
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Setup .NET Core
-      uses: actions/setup-dotnet@v3
-      with:
-        dotnet-version: ${{ env.DOTNET_VERSION }}
-
-    - name: Run Snyk to check for vulnerabilities
-      uses: snyk/actions/dotnet@master
-      env:
-        SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-      with:
-        args: --severity-threshold=high --fail-on=upgradable
-
-    - name: Snyk monitor
-      uses: snyk/actions/dotnet@master
-      env:
-        SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-      with:
-        command: monitor
-        args: --severity-threshold=high
-
-  build-and-test:
-    name: "🏗️ Build & Test"
-    runs-on: windows-latest
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Setup .NET Core
-      uses: actions/setup-dotnet@v3
-      with:
-        dotnet-version: ${{ env.DOTNET_VERSION }}
-
-    - name: Find project file
-      id: find-project
-      run: |
-        $projectFile = Get-ChildItem -Path "ExpoBooking.Api" -Recurse -Filter *.csproj | Select-Object -First 1
-        if ($projectFile) {
-          echo "PROJECT_PATH=$($projectFile.FullName)" >> $env:GITHUB_ENV
-          echo "Found project file: $($projectFile.FullName)"
-        } else {
-          echo "No .csproj file found in ExpoBooking.Api directory!"
-          Get-ChildItem -Path "ExpoBooking.Api" -Recurse
-          exit 1
-        }
-
-    - name: Restore dependencies
-      run: dotnet restore ${{ env.PROJECT_PATH }}
-
-    - name: Build with dotnet
-      run: dotnet build ${{ env.PROJECT_PATH }} --configuration Release --no-restore
-
-    - name: Test with dotnet
-      run: dotnet test ${{ env.PROJECT_PATH }} --configuration Release --no-build --verbosity normal
-
-    - name: Publish with dotnet
-      run: dotnet publish ${{ env.PROJECT_PATH }} --configuration Release --no-build --output ./publish
-
-    - name: Process frontend files
-      run: |
-        if (Test-Path -Path "front") {
-          Get-ChildItem -Path "front" -Filter *.txt | ForEach-Object {
-            $newName = $_.Name -replace '\.txt$', ''
-            Move-Item -Path $_.FullName -Destination (Join-Path $_.Directory $newName) -Force
-          }
-          echo "Frontend files processed"
-        } else {
-          echo "No frontend directory found, skipping frontend processing"
-        }
-
-    - name: Copy frontend to publish directory
-      run: |
-        if (Test-Path -Path "front") {
-          if (!(Test-Path -Path "publish/wwwroot")) {
-            New-Item -ItemType Directory -Path "publish/wwwroot" -Force
-          }
-          Copy-Item -Path "front/*" -Destination "publish/wwwroot/" -Recurse -Force
-          echo "Frontend files copied to publish directory"
-        } else {
-          echo "No frontend directory found, skipping frontend copy"
-        }
-
-    - name: Upload artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: dotnet-app
-        path: publish/
-
-  deploy:
-    name: "🚀 Deploy to Azure"
-    runs-on: windows-latest
-    needs: [linting, snyk-security, build-and-test]
-    environment: production
-    steps:
-    - name: Download artifact
-      uses: actions/download-artifact@v4
-      with:
-        name: dotnet-app
-
-    - name: Azure Login
-      uses: azure/login@v1
-      with:
-        creds: ${{ secrets.AZURE_CREDENTIALS }}
-
-    - name: Deploy to production
-      uses: azure/webapps-deploy@v2
-      with:
-        app-name: ${{ env.AZURE_WEBAPP_NAME }}
-        package: .
-        publish-profile: ${{ secrets.AZURE_PUBLISH_PROFILE }}
-
   notify-email:
     name: "📧 Email Notification"
     runs-on: ubuntu-latest
     needs: [linting, snyk-security, build-and-test, deploy]
     if: always()
     steps:
+    - name: Create status summary
+      id: status-summary
+      run: |
+        # Get the status of each job
+        LINT_STATUS="${{ needs.linting.result }}"
+        SNYK_STATUS="${{ needs.snyk-security.result }}"
+        BUILD_STATUS="${{ needs.build-and-test.result }}"
+        DEPLOY_STATUS="${{ needs.deploy.result }}"
+        
+        # Set default values if jobs were skipped
+        if [ -z "$LINT_STATUS" ]; then LINT_STATUS="skipped"; fi
+        if [ -z "$SNYK_STATUS" ]; then SNYK_STATUS="skipped"; fi
+        if [ -z "$BUILD_STATUS" ]; then BUILD_STATUS="skipped"; fi
+        if [ -z "$DEPLOY_STATUS" ]; then DEPLOY_STATUS="skipped"; fi
+        
+        echo "LINT_STATUS=$LINT_STATUS" >> $GITHUB_OUTPUT
+        echo "SNYK_STATUS=$SNYK_STATUS" >> $GITHUB_OUTPUT
+        echo "BUILD_STATUS=$BUILD_STATUS" >> $GITHUB_OUTPUT
+        echo "DEPLOY_STATUS=$DEPLOY_STATUS" >> $GITHUB_OUTPUT
+        
+        # Determine overall status
+        if [ "$LINT_STATUS" = "success" ] && [ "$SNYK_STATUS" = "success" ] && [ "$BUILD_STATUS" = "success" ] && [ "$DEPLOY_STATUS" = "success" ]; then
+          echo "OVERALL_STATUS=SUCCESS" >> $GITHUB_OUTPUT
+        else
+          echo "OVERALL_STATUS=FAILED" >> $GITHUB_OUTPUT
+        fi
+
     - name: Send email notification
       uses: dawidd6/action-send-mail@v3
       with:
@@ -166,106 +38,162 @@ jobs:
         server_port: 465
         username: ${{ secrets.EMAIL_USERNAME }}
         password: ${{ secrets.EMAIL_PASSWORD }}
-        subject: 'CI/CD Status: ${{ needs.deploy.result }} - ${{ github.workflow }}'
+        subject: 'CI/CD Status: ${{ steps.status-summary.outputs.OVERALL_STATUS }} - ${{ github.workflow }}'
         body: |
           <!DOCTYPE html>
           <html>
           <head>
             <style>
-              body { font-family: Arial, sans-serif; margin: 20px; }
-              .container { max-width: 600px; margin: 0 auto; }
-              .header { background: #f4f4f4; padding: 20px; border-radius: 5px; }
-              .status-pass { color: #2d8c2d; font-weight: bold; }
-              .status-fail { color: #d63638; font-weight: bold; }
-              .status-skipped { color: #8a8a8a; font-weight: bold; }
-              .test-result { margin: 10px 0; padding: 10px; border-left: 4px solid; }
-              .passed { border-color: #2d8c2d; background: #f0f9f0; }
-              .failed { border-color: #d63638; background: #fdf0f0; }
-              .skipped { border-color: #8a8a8a; background: #f8f8f8; }
-              .summary { background: #e8f4fd; padding: 15px; border-radius: 5px; margin: 20px 0; }
+              body { font-family: Arial, sans-serif; margin: 20px; background-color: #f5f5f5; }
+              .container { max-width: 700px; margin: 0 auto; background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+              .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 25px; border-radius: 8px; text-align: center; }
+              .status-pass { color: #28a745; font-weight: bold; }
+              .status-fail { color: #dc3545; font-weight: bold; }
+              .status-skipped { color: #6c757d; font-weight: bold; }
+              .test-result { margin: 15px 0; padding: 15px; border-radius: 8px; border-left: 5px solid; }
+              .passed { border-color: #28a745; background: #f8fff9; }
+              .failed { border-color: #dc3545; background: #fff5f5; }
+              .skipped { border-color: #6c757d; background: #f8f9fa; }
+              .summary { background: #e8f4fd; padding: 20px; border-radius: 8px; margin: 25px 0; }
+              .badge { display: inline-block; padding: 5px 12px; border-radius: 20px; font-size: 12px; font-weight: bold; margin-left: 10px; }
+              .badge-success { background: #28a745; color: white; }
+              .badge-danger { background: #dc3545; color: white; }
+              .badge-secondary { background: #6c757d; color: white; }
             </style>
           </head>
           <body>
             <div class="container">
               <div class="header">
-                <h1>🚀 CI/CD Pipeline Status</h1>
-                <h2>Workflow: ${{ github.workflow }}</h2>
-                <p><strong>Overall Status:</strong> <span class="${{ needs.deploy.result == 'success' && 'status-pass' || 'status-fail' }}">${{ needs.deploy.result }}</span></p>
+                <h1>🚀 CI/CD Pipeline Status Report</h1>
+                <h2>${{ github.workflow }}</h2>
+                <h3>Overall Status: 
+                  <span class="${{ steps.status-summary.outputs.OVERALL_STATUS == 'SUCCESS' && 'status-pass' || 'status-fail' }}">
+                    ${{ steps.status-summary.outputs.OVERALL_STATUS }}
+                  </span>
+                </h3>
               </div>
 
               <div class="summary">
-                <h3>📊 Quick Summary</h3>
-                <p><strong>Application:</strong> ${{ env.AZURE_WEBAPP_NAME }}</p>
-                <p><strong>Triggered by:</strong> ${{ github.actor }}</p>
-                <p><strong>Branch:</strong> ${{ github.ref }}</p>
-                <p><strong>Commit:</strong> ${{ github.sha }}</p>
-                <p><strong>Timestamp:</strong> ${{ fromJSON('{}').now }}</p>
+                <h3>📊 Deployment Summary</h3>
+                <table style="width: 100%; border-collapse: collapse;">
+                  <tr>
+                    <td style="padding: 8px; border-bottom: 1px solid #ddd;"><strong>Application:</strong></td>
+                    <td style="padding: 8px; border-bottom: 1px solid #ddd;">${{ env.AZURE_WEBAPP_NAME }}</td>
+                  </tr>
+                  <tr>
+                    <td style="padding: 8px; border-bottom: 1px solid #ddd;"><strong>Triggered by:</strong></td>
+                    <td style="padding: 8px; border-bottom: 1px solid #ddd;">${{ github.actor }}</td>
+                  </tr>
+                  <tr>
+                    <td style="padding: 8px; border-bottom: 1px solid #ddd;"><strong>Branch:</strong></td>
+                    <td style="padding: 8px; border-bottom: 1px solid #ddd;">${{ github.ref }}</td>
+                  </tr>
+                  <tr>
+                    <td style="padding: 8px; border-bottom: 1px solid #ddd;"><strong>Commit:</strong></td>
+                    <td style="padding: 8px; border-bottom: 1px solid #ddd;">${{ github.sha }}</td>
+                  </tr>
+                  <tr>
+                    <td style="padding: 8px;"><strong>Run ID:</strong></td>
+                    <td style="padding: 8px;">${{ github.run_id }}</td>
+                  </tr>
+                </table>
               </div>
 
               <h3>🔍 Detailed Test Results</h3>
 
-              <div class="test-result ${{ needs.linting.result == 'success' && 'passed' || needs.linting.result == 'failure' && 'failed' || 'skipped' }}">
-                <h4>🔍 Code Linting & Quality</h4>
-                <p><strong>Status:</strong> <span class="${{ needs.linting.result == 'success' && 'status-pass' || needs.linting.result == 'failure' && 'status-fail' || 'status-skipped' }}">
-                  ${{ needs.linting.result == 'success' && '✅ PASSED' || needs.linting.result == 'failure' && '❌ FAILED' || '⚪ SKIPPED' }}
-                </span></p>
-                <p>Code formatting, style checks, and quality analysis</p>
-              </div>
-
-              <div class="test-result ${{ needs.snyk-security.result == 'success' && 'passed' || needs.snyk-security.result == 'failure' && 'failed' || 'skipped' }}">
-                <h4>🔒 Snyk Security Scan</h4>
-                <p><strong>Status:</strong> <span class="${{ needs.snyk-security.result == 'success' && 'status-pass' || needs.snyk-security.result == 'failure' && 'status-fail' || 'status-skipped' }}">
-                  ${{ needs.snyk-security.result == 'success' && '✅ PASSED' || needs.snyk-security.result == 'failure' && '❌ FAILED' || '⚪ SKIPPED' }}
-                </span></p>
-                <p>Vulnerability assessment and dependency scanning</p>
-                ${{ needs.snyk-security.result == 'success' && '<p>✅ No high severity vulnerabilities detected</p>' || '' }}
-                ${{ needs.snyk-security.result == 'failure' && '<p>❌ Security vulnerabilities found - immediate review required</p>' || '' }}
-              </div>
-
-              <div class="test-result ${{ needs.build-and-test.result == 'success' && 'passed' || needs.build-and-test.result == 'failure' && 'failed' || 'skipped' }}">
-                <h4>🏗️ Build & Unit Tests</h4>
-                <p><strong>Status:</strong> <span class="${{ needs.build-and-test.result == 'success' && 'status-pass' || needs.build-and-test.result == 'failure' && 'status-fail' || 'status-skipped' }}">
-                  ${{ needs.build-and-test.result == 'success' && '✅ PASSED' || needs.build-and-test.result == 'failure' && '❌ FAILED' || '⚪ SKIPPED' }}
-                </span></p>
-                <p>Compilation, testing, and artifact preparation</p>
-              </div>
-
-              <div class="test-result ${{ needs.deploy.result == 'success' && 'passed' || needs.deploy.result == 'failure' && 'failed' || 'skipped' }}">
-                <h4>🚀 Azure Deployment</h4>
-                <p><strong>Status:</strong> <span class="${{ needs.deploy.result == 'success' && 'status-pass' || needs.deploy.result == 'failure' && 'status-fail' || 'status-skipped' }}">
-                  ${{ needs.deploy.result == 'success' && '✅ PASSED' || needs.deploy.result == 'failure' && '❌ FAILED' || '⚪ SKIPPED' }}
-                </span></p>
-                <p>Deployment to Azure App Service production environment</p>
-                ${{ needs.deploy.result == 'success' && '<p>✅ Application successfully deployed to production</p>' || '' }}
-                ${{ needs.deploy.result == 'failure' && '<p>❌ Deployment failed - check Azure logs</p>' || '' }}
-              </div>
-
-              <div class="summary">
-                <h3>🎯 Final Result</h3>
-                ${{ needs.linting.result == 'success' && needs.snyk-security.result == 'success' && needs.build-and-test.result == 'success' && needs.deploy.result == 'success' }}
-                <p style="color: #2d8c2d; font-size: 18px; font-weight: bold;">✅ ALL CHECKS PASSED - Deployment Successful!</p>
-                ${{ else }}
-                <p style="color: #d63638; font-size: 18px; font-weight: bold;">❌ SOME CHECKS FAILED - Review Required!</p>
-                ${{ endif }}
-                
-                <p><strong>Failed Jobs:</strong> 
-                ${{ needs.linting.result == 'failure' && '🔍 Linting, ' || '' }}
-                ${{ needs.snyk-security.result == 'failure' && '🔒 Snyk Security, ' || '' }}
-                ${{ needs.build-and-test.result == 'failure' && '🏗️ Build & Test, ' || '' }}
-                ${{ needs.deploy.result == 'failure' && '🚀 Deployment' || '' }}
-                ${{ needs.linting.result != 'failure' && needs.snyk-security.result != 'failure' && needs.build-and-test.result != 'failure' && needs.deploy.result != 'failure' && 'None' || '' }}
+              <!-- Linter Status -->
+              <div class="test-result ${{ steps.status-summary.outputs.LINT_STATUS == 'success' && 'passed' || steps.status-summary.outputs.LINT_STATUS == 'failure' && 'failed' || 'skipped' }}">
+                <h4>🔍 Code Linting & Quality Analysis</h4>
+                <p>
+                  <strong>Status:</strong> 
+                  <span class="${{ steps.status-summary.outputs.LINT_STATUS == 'success' && 'status-pass' || steps.status-summary.outputs.LINT_STATUS == 'failure' && 'status-fail' || 'status-skipped' }}">
+                    ${{ steps.status-summary.outputs.LINT_STATUS == 'success' && '✅ PASSED' || steps.status-summary.outputs.LINT_STATUS == 'failure' && '❌ FAILED' || '⚪ SKIPPED' }}
+                  </span>
+                  <span class="${{ steps.status-summary.outputs.LINT_STATUS == 'success' && 'badge badge-success' || steps.status-summary.outputs.LINT_STATUS == 'failure' && 'badge badge-danger' || 'badge badge-secondary' }}">
+                    ${{ steps.status-summary.outputs.LINT_STATUS == 'success' && 'PASS' || steps.status-summary.outputs.LINT_STATUS == 'failure' && 'FAIL' || 'SKIPPED' }}
+                  </span>
                 </p>
+                <p>Code formatting, style consistency, and quality standards verification</p>
+                ${{ steps.status-summary.outputs.LINT_STATUS == 'success' && '<p>✅ All code quality checks passed successfully</p>' || '' }}
+                ${{ steps.status-summary.outputs.LINT_STATUS == 'failure' && '<p>❌ Code formatting or quality issues detected</p>' || '' }}
+              </div>
+
+              <!-- Snyk Security Status -->
+              <div class="test-result ${{ steps.status-summary.outputs.SNYK_STATUS == 'success' && 'passed' || steps.status-summary.outputs.SNYK_STATUS == 'failure' && 'failed' || 'skipped' }}">
+                <h4>🔒 Snyk Security Vulnerability Scan</h4>
+                <p>
+                  <strong>Status:</strong> 
+                  <span class="${{ steps.status-summary.outputs.SNYK_STATUS == 'success' && 'status-pass' || steps.status-summary.outputs.SNYK_STATUS == 'failure' && 'status-fail' || 'status-skipped' }}">
+                    ${{ steps.status-summary.outputs.SNYK_STATUS == 'success' && '✅ PASSED' || steps.status-summary.outputs.SNYK_STATUS == 'failure' && '❌ FAILED' || '⚪ SKIPPED' }}
+                  </span>
+                  <span class="${{ steps.status-summary.outputs.SNYK_STATUS == 'success' && 'badge badge-success' || steps.status-summary.outputs.SNYK_STATUS == 'failure' && 'badge badge-danger' || 'badge badge-secondary' }}">
+                    ${{ steps.status-summary.outputs.SNYK_STATUS == 'success' && 'PASS' || steps.status-summary.outputs.SNYK_STATUS == 'failure' && 'FAIL' || 'SKIPPED' }}
+                  </span>
+                </p>
+                <p>Dependency vulnerability scanning and security assessment</p>
+                ${{ steps.status-summary.outputs.SNYK_STATUS == 'success' && '<p>✅ No high severity vulnerabilities detected</p>' || '' }}
+                ${{ steps.status-summary.outputs.SNYK_STATUS == 'failure' && '<p>❌ Security vulnerabilities found - immediate review required</p>' || '' }}
+              </div>
+
+              <!-- Build & Test Status -->
+              <div class="test-result ${{ steps.status-summary.outputs.BUILD_STATUS == 'success' && 'passed' || steps.status-summary.outputs.BUILD_STATUS == 'failure' && 'failed' || 'skipped' }}">
+                <h4>🏗️ Build & Unit Tests</h4>
+                <p>
+                  <strong>Status:</strong> 
+                  <span class="${{ steps.status-summary.outputs.BUILD_STATUS == 'success' && 'status-pass' || steps.status-summary.outputs.BUILD_STATUS == 'failure' && 'status-fail' || 'status-skipped' }}">
+                    ${{ steps.status-summary.outputs.BUILD_STATUS == 'success' && '✅ PASSED' || steps.status-summary.outputs.BUILD_STATUS == 'failure' && '❌ FAILED' || '⚪ SKIPPED' }}
+                  </span>
+                  <span class="${{ steps.status-summary.outputs.BUILD_STATUS == 'success' && 'badge badge-success' || steps.status-summary.outputs.BUILD_STATUS == 'failure' && 'badge badge-danger' || 'badge badge-secondary' }}">
+                    ${{ steps.status-summary.outputs.BUILD_STATUS == 'success' && 'PASS' || steps.status-summary.outputs.BUILD_STATUS == 'failure' && 'FAIL' || 'SKIPPED' }}
+                  </span>
+                </p>
+                <p>Application compilation, testing, and artifact preparation</p>
+              </div>
+
+              <!-- Deployment Status -->
+              <div class="test-result ${{ steps.status-summary.outputs.DEPLOY_STATUS == 'success' && 'passed' || steps.status-summary.outputs.DEPLOY_STATUS == 'failure' && 'failed' || 'skipped' }}">
+                <h4>🚀 Azure App Service Deployment</h4>
+                <p>
+                  <strong>Status:</strong> 
+                  <span class="${{ steps.status-summary.outputs.DEPLOY_STATUS == 'success' && 'status-pass' || steps.status-summary.outputs.DEPLOY_STATUS == 'failure' && 'status-fail' || 'status-skipped' }}">
+                    ${{ steps.status-summary.outputs.DEPLOY_STATUS == 'success' && '✅ PASSED' || steps.status-summary.outputs.DEPLOY_STATUS == 'failure' && '❌ FAILED' || '⚪ SKIPPED' }}
+                  </span>
+                  <span class="${{ steps.status-summary.outputs.DEPLOY_STATUS == 'success' && 'badge badge-success' || steps.status-summary.outputs.DEPLOY_STATUS == 'failure' && 'badge badge-danger' || 'badge badge-secondary' }}">
+                    ${{ steps.status-summary.outputs.DEPLOY_STATUS == 'success' && 'PASS' || steps.status-summary.outputs.DEPLOY_STATUS == 'failure' && 'FAIL' || 'SKIPPED' }}
+                  </span>
+                </p>
+                <p>Production deployment to Azure App Service</p>
+                ${{ steps.status-summary.outputs.DEPLOY_STATUS == 'success' && '<p>✅ Application successfully deployed to production environment</p>' || '' }}
+                ${{ steps.status-summary.outputs.DEPLOY_STATUS == 'failure' && '<p>❌ Deployment failed - check Azure deployment logs</p>' || '' }}
+              </div>
+
+              <!-- Final Summary -->
+              <div class="summary">
+                <h3>🎯 Pipeline Summary</h3>
+                ${{ steps.status-summary.outputs.OVERALL_STATUS == 'SUCCESS' }}
+                <div style="background: #d4edda; color: #155724; padding: 15px; border-radius: 5px; text-align: center;">
+                  <h4 style="margin: 0; color: #155724;">✅ ALL CHECKS PASSED!</h4>
+                  <p style="margin: 5px 0 0 0; font-size: 16px;">The application has been successfully deployed to production.</p>
+                </div>
+                ${{ else }}
+                <div style="background: #f8d7da; color: #721c24; padding: 15px; border-radius: 5px; text-align: center;">
+                  <h4 style="margin: 0; color: #721c24;">❌ PIPELINE FAILED</h4>
+                  <p style="margin: 5px 0 0 0; font-size: 16px;">Some checks failed. Please review the failed jobs below.</p>
+                </div>
+                ${{ endif }}
               </div>
 
               <hr>
               <p><strong>🔗 Quick Links:</strong></p>
               <ul>
-                <li><a href="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}">View Detailed Logs</a></li>
-                <li><a href="https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net">Visit Application</a></li>
-                <li><a href="https://github.com/${{ github.repository }}">Repository</a></li>
+                <li><a href="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}">📋 View Detailed Pipeline Logs</a></li>
+                <li><a href="https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net">🌐 Visit Deployed Application</a></li>
+                <li><a href="https://github.com/${{ github.repository }}">📁 Repository Homepage</a></li>
               </ul>
 
-              <p><em>This is an automated message from GitHub Actions CI/CD Pipeline</em></p>
+              <p style="text-align: center; color: #6c757d; margin-top: 30px;">
+                <em>This is an automated status report from GitHub Actions CI/CD Pipeline</em>
+              </p>
             </div>
           </body>
           </html>
