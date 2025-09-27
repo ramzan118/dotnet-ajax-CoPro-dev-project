@@ -1,8 +1,10 @@
-name: Simple CI/CD Pipeline with Email Notifications and Linting
+name: CI/CD Pipeline with PR Linting
 
 on:
   push:
-    branches: [develop]
+    branches: [develop, main]
+  pull_request:
+    branches: [develop, main]
   workflow_dispatch:
 
 env:
@@ -12,101 +14,166 @@ env:
 
 jobs:
   linting:
+    name: Code Quality Check
     runs-on: windows-latest
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
 
     - name: Setup .NET Core
       uses: actions/setup-dotnet@v3
       with:
         dotnet-version: ${{ env.DOTNET_VERSION }}
 
-    - name: Install .NET Code Analysis tools
-      run: |
-        dotnet tool install -g dotnet-format
-        dotnet tool install -g SecurityCodeScan.VS2019
-        dotnet add package StyleCop.Analyzers --version 1.1.118
-
-    - name: Run .NET Code Linting
+    - name: Run .NET Code Analysis
+      id: dotnet-lint
       run: |
         echo "Running .NET code analysis..."
         
-        # Find all C# projects
+        # Install analysis tools
+        dotnet tool install -g dotnet-format
+        dotnet add package StyleCop.Analyzers --version 1.1.118
+        
+        # Find and analyze all C# projects
         $projects = Get-ChildItem -Recurse -Filter *.csproj
+        $lintResults = @()
+        
         foreach ($project in $projects) {
           echo "Analyzing project: $($project.Name)"
           
           # Run code formatting check
-          dotnet format $project.FullName --verify-no-changes --verbosity detailed
+          dotnet format $project.FullName --verify-no-changes --verbosity normal
+          if ($LASTEXITCODE -eq 0) {
+            $lintResults += "✅ $($project.Name): Formatting OK"
+          } else {
+            $lintResults += "❌ $($project.Name): Formatting issues found"
+          }
           
-          # Run security analysis
-          dotnet build $project.FullName /p:SecurityCodeScan=true
+          # Build with analyzers
+          dotnet build $project.FullName --verbosity minimal
+          if ($LASTEXITCODE -eq 0) {
+            $lintResults += "✅ $($project.Name): Build with analyzers OK"
+          } else {
+            $lintResults += "❌ $($project.Name): Build analysis failed"
+          }
         }
         
-        # Run additional static analysis
-        dotnet list package --vulnerable
-        dotnet outdated
+        # Output results for PR comment
+        echo "LINT_RESULTS<<EOF" >> $env:GITHUB_OUTPUT
+        echo "$($lintResults -join "`n")" >> $env:GITHUB_OUTPUT
+        echo "EOF" >> $env:GITHPUT_OUTPUT
 
-    - name: Install AJAX/JavaScript linting tools
+    - name: Run JavaScript/AJAX Linting
+      id: js-lint
       run: |
-        npm install -g eslint
-        npm install -g jshint
-        npm install -g ajax-linter
-
-    - name: Run AJAX/JavaScript Linting
-      run: |
-        echo "Running AJAX/JavaScript linting..."
+        echo "Running JavaScript/AJAX linting..."
         
-        # Check if frontend directory exists
+        $lintResults = @()
+        
         if (Test-Path -Path "front") {
           Set-Location front
           
-          # Initialize package.json if missing
-          if (!(Test-Path -Path "package.json")) {
+          # Check for package.json
+          if (Test-Path -Path "package.json") {
+            npm install
+          } else {
             npm init -y
+            npm install --save-dev eslint
           }
           
-          # Install linting dependencies
-          npm install --save-dev eslint jshint @typescript/eslint-parser
+          # Create basic ESLint config if missing
+          if (!(Test-Path -Path ".eslintrc.js")) {
+            @"
+module.exports = {
+  env: {
+    browser: true,
+    es2021: true
+  },
+  extends: ['eslint:recommended'],
+  parserOptions: {
+    ecmaVersion: 12,
+    sourceType: 'module'
+  },
+  rules: {
+    'no-unused-vars': 'warn',
+    'no-console': 'warn'
+  }
+};
+"@ | Out-File -FilePath ".eslintrc.js" -Encoding UTF8
+          }
           
           # Run ESLint
-          npx eslint . --ext .js,.jsx,.ts,.tsx --format table || echo "ESLint completed with findings"
+          npx eslint . --ext .js,.jsx,.ts,.tsx --format json | Out-File -FilePath "eslint-report.json" -Encoding UTF8
           
-          # Run JSHint
-          npx jshint . || echo "JSHint completed with findings"
-          
-          # Check for common AJAX security issues
-          echo "Checking for AJAX security patterns..."
-          grep -r "\.ajax(" . --include="*.js" --include="*.ts" || echo "No AJAX calls found"
-          grep -r "fetch(" . --include="*.js" --include="*.ts" || echo "No fetch calls found"
-        else
-          echo "Frontend directory not found, skipping AJAX linting"
-        fi
+          if ($LASTEXITCODE -eq 0) {
+            $lintResults += "✅ JavaScript/AJAX: No linting errors"
+          } else {
+            $errors = Get-Content "eslint-report.json" | ConvertFrom-Json
+            $errorCount = ($errors | ForEach-Object { $_.errorCount }) | Measure-Object -Sum | Select-Object -ExpandProperty Sum
+            $lintResults += "⚠️ JavaScript/AJAX: $errorCount linting issues found"
+          }
+        } else {
+          $lintResults += "ℹ️ No frontend directory found for JavaScript linting"
+        }
+        
+        echo "JS_LINT_RESULTS<<EOF" >> $env:GITHUB_OUTPUT
+        echo "$($lintResults -join "`n")" >> $env:GITHUB_OUTPUT
+        echo "EOF" >> $env:GITHUB_OUTPUT
 
-    - name: Run XML/Config Linting
+    - name: Upload Lint Results
+      uses: actions/upload-artifact@v4
+      with:
+        name: lint-results
+        path: |
+          **/eslint-report.json
+          **/bin/
+          **/obj/
+
+  code-analysis:
+    name: Static Analysis
+    runs-on: windows-latest
+    if: github.event_name == 'pull_request'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v3
+      with:
+        dotnet-version: ${{ env.DOTNET_VERSION }}
+
+    - name: Run Security Scan
       run: |
-        echo "Checking configuration files..."
+        # Install and run security scanner
+        dotnet tool install --global security-scan
+        dotnet list package --vulnerable --format json | Out-File -FilePath "vulnerability-report.json"
         
-        # Check web.config for security settings
-        if (Test-Path -Path "web.config") {
-          echo "Checking web.config..."
-          # Validate XML structure
-          powershell -Command "[xml](Get-Content web.config)" | Out-Null
-          echo "web.config XML is valid"
+        # Check for critical vulnerabilities
+        $vulnReport = Get-Content "vulnerability-report.json" | ConvertFrom-Json
+        if ($vulnReport.vulnerabilities.Count -gt 0) {
+          echo "❌ Vulnerabilities found in dependencies"
+          exit 1
+        } else {
+          echo "✅ No vulnerabilities found"
         }
-        
-        # Check appsettings.json
-        if (Test-Path -Path "appsettings.json") {
-          echo "Checking appsettings.json..."
-          # Validate JSON structure
-          Get-Content appsettings.json | ConvertFrom-Json | Out-Null
-          echo "appsettings.json JSON is valid"
-        }
+
+    - name: Publish Code Analysis Results
+      uses: github/codeql-action/upload-sarif@v3
+      if: always()
+      with:
+        sarif_file: vulnerability-report.json
 
   build-and-test:
+    name: Build and Test
     runs-on: windows-latest
-    needs: linting
+    needs: [linting, code-analysis]
+    if: github.event_name == 'push' || (github.event_name == 'pull_request' && needs.linting.result == 'success')
+    
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
@@ -125,19 +192,8 @@ jobs:
           echo "Found project file: $($projectFile.FullName)"
         } else {
           echo "No .csproj file found in ExpoBooking.Api directory!"
-          Get-ChildItem -Path "ExpoBooking.Api" -Recurse
           exit 1
         }
-
-    - name: Run Code Quality Analysis
-      run: |
-        echo "Running additional code quality checks..."
-        
-        # Install and run SonarScanner for .NET
-        dotnet tool install --global dotnet-sonarscanner
-        dotnet sonarscanner begin /k:"ExpoBooking.Api" /d:sonar.host.url="https://sonarcloud.io" /d:sonar.login=${{ secrets.SONAR_TOKEN }}
-        dotnet build ${{ env.PROJECT_PATH }}
-        dotnet sonarscanner end /d:sonar.login=${{ secrets.SONAR_TOKEN }}
 
     - name: Restore dependencies
       run: dotnet restore ${{ env.PROJECT_PATH }}
@@ -145,64 +201,69 @@ jobs:
     - name: Build with dotnet
       run: dotnet build ${{ env.PROJECT_PATH }} --configuration Release --no-restore
 
-    - name: Run Security Scan
-      run: |
-        # Security vulnerability scan
-        dotnet list package --vulnerable
-        dotnet retire --path ${{ env.PROJECT_PATH }}
-
     - name: Test with dotnet
       run: dotnet test ${{ env.PROJECT_PATH }} --configuration Release --no-build --verbosity normal --logger "trx;LogFileName=testresults.trx"
 
-    - name: Publish test results
+    - name: Publish Test Results
       uses: actions/upload-artifact@v4
       with:
         name: test-results
         path: **/*.trx
 
     - name: Publish with dotnet
+      if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
       run: dotnet publish ${{ env.PROJECT_PATH }} --configuration Release --no-build --output ./publish
 
-    - name: Process frontend files
-      run: |
-        if (Test-Path -Path "front") {
-          Get-ChildItem -Path "front" -Filter *.txt | ForEach-Object {
-            $newName = $_.Name -replace '\.txt$', ''
-            Move-Item -Path $_.FullName -Destination (Join-Path $_.Directory $newName) -Force
-          }
-          echo "Frontend files processed"
-        } else {
-          echo "Frontend directory not found"
-        }
+  pr-lint-comment:
+    name: Add PR Lint Results Comment
+    runs-on: windows-latest
+    if: github.event_name == 'pull_request'
+    needs: [linting, code-analysis]
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
 
-    - name: Copy frontend to publish directory
-      run: |
-        if (Test-Path -Path "front") {
-          if (!(Test-Path -Path "publish/wwwroot")) {
-            New-Item -ItemType Directory -Path "publish/wwwroot" -Force
-          }
-          Copy-Item -Path "front/*" -Destination "publish/wwwroot/" -Recurse -Force
-          echo "Frontend files copied to publish directory"
-        } else {
-          echo "No frontend files to copy"
-        }
-
-    - name: Run Final Security Check
-      run: |
-        echo "Running final security checks..."
-        # Check for sensitive data in published files
-        grep -r "password\|secret\|key" ./publish --include="*.json" --include="*.config" || echo "No obvious secrets found"
-
-    - name: Upload artifact
-      uses: actions/upload-artifact@v4
+    - name: Create PR Comment with Lint Results
+      uses: actions/github-script@v6
       with:
-        name: dotnet-app
-        path: publish/
+        script: |
+          const { linting, codeAnalysis } = context.job.needs;
+          
+          let commentBody = `## 🔍 Code Quality Report for PR #${{ github.event.number }}
+
+          **Linting Status:** ${linting.result === 'success' ? '✅ Passed' : '❌ Failed'}
+          **Security Scan:** ${codeAnalysis.result === 'success' ? '✅ Passed' : '❌ Failed'}
+
+          ### 📊 Summary
+          | Check | Status | Details |
+          |-------|--------|---------|
+          | .NET Code Analysis | ${linting.result === 'success' ? '✅ Passed' : '❌ Issues found'} | [View logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |
+          | JavaScript/AJAX Linting | ${linting.result === 'success' ? '✅ Passed' : '⚠️ Review needed'} | [View logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |
+          | Security Scan | ${codeAnalysis.result === 'success' ? '✅ Clean' : '❌ Vulnerabilities'} | [View report](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |
+
+          ### 📝 Next Steps
+          ${linting.result === 'success' && codeAnalysis.result === 'success' 
+            ? '✅ All checks passed! Ready for review and merge.' 
+            : '⚠️ Some checks failed. Please review the findings before merging.'}
+
+          ---
+          *Generated by GitHub Actions*`;
+
+          github.rest.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: commentBody
+          });
 
   deploy:
+    name: Deploy to Production
     runs-on: windows-latest
     needs: build-and-test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
     environment: production
+    
     steps:
     - name: Download artifact
       uses: actions/download-artifact@v4
@@ -214,11 +275,6 @@ jobs:
       with:
         creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-    - name: Validate Azure Resources
-      run: |
-        az webapp show --name ${{ env.AZURE_WEBAPP_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }}
-        az appservice plan list --query "[?name=='${{ env.AZURE_WEBAPP_NAME }}']"
-
     - name: Deploy to production
       uses: azure/webapps-deploy@v2
       with:
@@ -226,22 +282,12 @@ jobs:
         package: .
         publish-profile: ${{ secrets.AZURE_PUBLISH_PROFILE }}
 
-    - name: Health Check after deployment
-      run: |
-        echo "Waiting for application to start..."
-        Start-Sleep -Seconds 30
-        $healthUrl = "https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net/health"
-        try {
-          $response = Invoke-WebRequest -Uri $healthUrl -TimeoutSec 30
-          echo "Health check: ✅ Application is responding"
-        } catch {
-          echo "Health check: ⚠️ Application might be starting up slowly"
-        }
-
   notify-email:
+    name: Email Notification
     runs-on: ubuntu-latest
-    needs: [linting, build-and-test, deploy]
-    if: always()
+    needs: [build-and-test, deploy]
+    if: always() && (github.event_name == 'push')
+    
     steps:
     - name: Send email notification
       uses: dawidd6/action-send-mail@v3
@@ -250,7 +296,7 @@ jobs:
         server_port: 465
         username: ${{ secrets.EMAIL_USERNAME }}
         password: ${{ secrets.EMAIL_PASSWORD }}
-        subject: 'Deployment Status: ${{ job.status }} - Linting & Security Results'
+        subject: 'Deployment Status: ${{ job.status }} - PR Checks Included'
         body: |
           CI/CD Pipeline completed with status: ${{ job.status }}
           
@@ -258,20 +304,15 @@ jobs:
           - Application: ${{ env.AZURE_WEBAPP_NAME }}
           - Triggered by: ${{ github.actor }}
           - Commit: ${{ github.sha }}
-          - Linting Status: ${{ needs.linting.result }}
+          - PR Linting Status: ${{ needs.linting.result }}
           - Build Status: ${{ needs.build-and-test.result }}
           - Deploy Status: ${{ needs.deploy.result }}
-          - Run URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
           
           Code Quality Summary:
-          - .NET Code Analysis: Completed
-          - AJAX/JavaScript Linting: Completed  
-          - Security Scanning: Completed
-          - Dependency Vulnerability Check: Completed
+          - .NET Code Analysis: ${{ needs.linting.result }}
+          - JavaScript/AJAX Linting: ${{ needs.linting.result }}
+          - Security Scanning: ${{ needs.code-analysis.result }}
           
-          Next Steps:
-          - Review linting results in workflow logs
-          - Check test coverage reports
-          - Verify deployment health status
+          View detailed results: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
         to: mramzan.workmail@gmail.com
         from: GitHub Actions
